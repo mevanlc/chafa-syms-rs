@@ -11,6 +11,7 @@ use crate::geometry::{SYMBOL_HEIGHT_PIXELS, SYMBOL_WIDTH_PIXELS};
 use crate::pixops::{self, PixelType};
 use crate::printer::{print_cells, Optimizations};
 use crate::select::{render_cells, CanvasMode, CellOut, RenderConfig};
+use crate::smolscale;
 use crate::symbol_map::SymbolMap;
 
 /// Canvas configuration. Construct with [`CanvasConfig::new`] then use the
@@ -129,7 +130,13 @@ impl Canvas {
     }
 
     /// Draw raw pixels onto the canvas: convert format → resample to the cell
-    /// grid → composite alpha over the background → run the selection core.
+    /// grid (a bit-exact port of chafa's smolscale, gamma-correct in
+    /// premultiplied linear light) → composite alpha over the background → run
+    /// the selection core.
+    ///
+    /// The resample is a pure stretch to `width*8 × height*8`, matching chafa
+    /// run with `--stretch`. Placement/tuck/align (chafa's CLI default
+    /// centering) is not modeled here.
     pub fn draw_all_pixels(
         &mut self,
         ptype: PixelType,
@@ -138,9 +145,16 @@ impl Canvas {
         h: usize,
         rowstride: usize,
     ) {
+        // Decode the input format to tightly-packed RGBA8 bytes, then resample
+        // with the smolscale port (which does its own unpack/premul/gamma).
         let src = pixops::to_rgba(ptype, data, w, h, rowstride);
+        let src_bytes: Vec<u8> = src.iter().flat_map(|c| c.ch).collect();
         let (dw, dh) = (self.width_pixels(), self.height_pixels());
-        let mut grid = pixops::scale(&src, w, h, dw, dh);
+        let scaled = smolscale::scale_rgba8(&src_bytes, w, h, dw, dh);
+        let mut grid: Vec<Color> = scaled
+            .chunks_exact(4)
+            .map(|p| Color::new(p[0], p[1], p[2], p[3]))
+            .collect();
         if pixops::has_alpha(&grid) {
             composite_grid(&mut grid, self.cfg.bg_rgb);
         }

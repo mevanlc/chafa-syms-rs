@@ -25,7 +25,8 @@ by differential tests:
 | Symbol map (selectors: tags, ranges, codepoints, `[...]` sets; dedup, sort) | compiled codepoints + order vs `symbol_map->symbols` | ✅ exact |
 | Selection core (symbol + colors per cell) | `(char, fg, bg)` vs chafa's cells, all color modes × work levels × fg-only, fed chafa's exact pixels | ✅ exact |
 | Printer (cells → ANSI) | byte-exact vs chafa's canonical output, all modes × `-O 0/5/6` | ✅ exact |
-| End-to-end (image → ANSI) | byte-exact vs chafa for pre-sized opaque inputs (`-p off`) | ✅ exact |
+| Scaler (smolscale) | RGBA8 resample vs chafa's smolscale, every filter path × axis (incl. alpha) | ✅ exact |
+| End-to-end (image → ANSI) | byte-exact vs chafa, incl. real `--stretch` scaling (`-p off`) | ✅ exact |
 
 **Determinism note.** Stock chafa breaks equal-popcount symbol ties with an
 unstable `qsort` over GLib hashtable order (platform-dependent, non-canonical).
@@ -45,13 +46,17 @@ differ on ~3% of cells — all genuinely arbitrary ties. See
 - ANSI/UTF-8 output with the `REUSE_ATTRIBUTES` optimization, aixterm 16-color
   pen math, and 16/8 bold-for-bright.
 - Six input pixel formats: RGBA8 / BGRA8 / ARGB8 / ABGR8 / RGB8 / BGR8.
+- Bit-exact **smolscale** resampling: a faithful port of chafa's scalar
+  resampler (gamma-correct, premultiplied linear-light box/bilinear), as a pure
+  stretch to the cell grid.
 - `rayon` multithreading (deterministic regardless of thread count).
 
 ## Not ported (out of scope or best-effort)
 
-- **Scaler:** a self-contained box/bilinear resampler is included, but it is
-  *not* a bit-exact port of chafa's smolscale (D2: scaling is best-effort, not
-  the parity gate). Pass a pre-sized buffer for exact selection.
+- **Placement / tuck / align:** the scaler is a pure *stretch* (resize to the
+  cell grid), matching chafa `--stretch`. chafa's CLI-default FIT-and-center
+  placement (and the AVX2 fast paths / CPU-feature multiversioning) are not
+  modeled; the underlying resampling math is bit-exact regardless.
 - **Preprocessing:** chafa's `normalize_rgb`/saturation preprocessing (applied
   to 16/8/fgbg modes) is not ported; the library behaves as `--preprocess off`.
 - **User-imported glyphs:** the selector engine's RTL / zero-width /
@@ -74,7 +79,8 @@ canvas.draw_all_pixels(PixelType::Rgba8, &rgba, width, height, width * 4);
 print!("{}", canvas.print());
 ```
 
-For bit-exact selection, pre-size the image to `width*8 × height*8` and use
+`draw_all_pixels` resamples (bit-exactly, as a stretch) to the cell grid. To
+skip resampling entirely, pre-size the image to `width*8 × height*8` and use
 `Canvas::draw_rgba_presized`.
 
 ## CLI usage
@@ -101,7 +107,8 @@ crates/chafa-syms-rs/   the library
   src/select.rs         the selection core (the novel part)
   src/palette.rs        fixed palettes + nearest lookup
   src/printer.rs        ANSI/UTF-8 serialization
-  src/pixops.rs         input formats, scaler, alpha composite
+  src/pixops.rs         input formats + alpha composite
+  src/smolscale.rs      bit-exact smolscale resampler (+ smolscale_luts.rs)
   src/canvas.rs         high-level Canvas/CanvasConfig API
 crates/chafa-syms/      the CLI
 tools/transcode-symbols/ one-shot codegen: chafa headers -> symbol/data.rs

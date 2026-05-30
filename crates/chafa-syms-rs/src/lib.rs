@@ -16,6 +16,8 @@ pub mod palette;
 pub mod pixops;
 pub mod printer;
 pub mod select;
+pub mod smolscale;
+mod smolscale_luts;
 pub mod symbol;
 pub mod symbol_map;
 pub mod work_cell;

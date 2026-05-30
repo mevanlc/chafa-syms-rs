@@ -1,12 +1,10 @@
-//! Pixel ingestion pipeline: input-format conversion, scaling, and
+//! Pixel ingestion pipeline: input-format conversion and
 //! alpha-over-background compositing.
 //!
 //! The **alpha composite** and **format conversion** are faithful ports of
 //! `chafa-pixops.c` (`composite_alpha_on_bg`, the `ChafaPixelType` byte orders).
-//! The **scaler** is a self-contained pure-Rust box/bilinear resampler — it is
-//! *not* a bit-exact port of smolscale (D2: scaling is best-effort, not the
-//! parity gate). The selection core is validated against chafa's exact
-//! post-prep pixels regardless (see `tests/selection_parity.rs`).
+//! **Resampling** is handled separately by [`crate::smolscale`], a bit-exact
+//! port of chafa's smolscale resampler.
 //!
 //! Per-channel `for c in 0..4` loops mirror chafa's fixed RGBA iteration.
 #![allow(clippy::needless_range_loop)]
@@ -79,89 +77,9 @@ pub fn composite_over_bg(pixels: &mut [Color], bg: Color) {
     }
 }
 
-/// Resample `src` (`sw`×`sh`) to `dw`×`dh`. Box-averages when shrinking an axis
-/// and bilinearly interpolates when growing it, channel-wise in sRGB space.
-/// Best-effort (not smolscale-exact).
-pub fn scale(src: &[Color], sw: usize, sh: usize, dw: usize, dh: usize) -> Vec<Color> {
-    if sw == dw && sh == dh {
-        return src.to_vec();
-    }
-    // Two-pass separable resample: horizontal then vertical.
-    let horiz = resample_axis_rows(src, sw, sh, dw);
-    resample_axis_cols(&horiz, dw, sh, dh)
-}
-
-/// Resample each row from `sw` to `dw` samples.
-fn resample_axis_rows(src: &[Color], sw: usize, sh: usize, dw: usize) -> Vec<Color> {
-    let mut out = vec![Color::default(); dw * sh];
-    for y in 0..sh {
-        let srow = &src[y * sw..y * sw + sw];
-        let drow = &mut out[y * dw..y * dw + dw];
-        resample_line(srow, drow, sw, dw);
-    }
-    out
-}
-
-/// Resample each column from `sh` to `dh` samples (operating on `w`-wide rows).
-fn resample_axis_cols(src: &[Color], w: usize, sh: usize, dh: usize) -> Vec<Color> {
-    let mut out = vec![Color::default(); w * dh];
-    // Gather a column, resample, scatter back.
-    let mut col_in = vec![Color::default(); sh];
-    let mut col_out = vec![Color::default(); dh];
-    for x in 0..w {
-        for y in 0..sh {
-            col_in[y] = src[y * w + x];
-        }
-        resample_line(&col_in, &mut col_out, sh, dh);
-        for y in 0..dh {
-            out[y * w + x] = col_out[y];
-        }
-    }
-    out
-}
-
-/// Resample a 1-D line of `n` samples to `m` samples.
-fn resample_line(src: &[Color], dst: &mut [Color], n: usize, m: usize) {
-    if m <= n {
-        // Downscale: average each output's source span (box filter).
-        for (j, d) in dst.iter_mut().enumerate() {
-            let lo = j * n / m;
-            let hi = ((j + 1) * n).div_ceil(m).max(lo + 1).min(n);
-            let mut acc = [0u32; 4];
-            let cnt = (hi - lo) as u32;
-            for s in &src[lo..hi] {
-                for c in 0..4 {
-                    acc[c] += s.ch[c] as u32;
-                }
-            }
-            *d = Color::new(
-                (acc[0] / cnt) as u8,
-                (acc[1] / cnt) as u8,
-                (acc[2] / cnt) as u8,
-                (acc[3] / cnt) as u8,
-            );
-        }
-    } else {
-        // Upscale: linear interpolation between neighbouring source samples.
-        for (j, d) in dst.iter_mut().enumerate() {
-            let pos = if m > 1 {
-                j as f32 * (n as f32 - 1.0) / (m as f32 - 1.0)
-            } else {
-                0.0
-            };
-            let i0 = pos.floor() as usize;
-            let i1 = (i0 + 1).min(n - 1);
-            let t = pos - i0 as f32;
-            let a = src[i0];
-            let b = src[i1];
-            let mut ch = [0u8; 4];
-            for c in 0..4 {
-                ch[c] = (a.ch[c] as f32 * (1.0 - t) + b.ch[c] as f32 * t).round() as u8;
-            }
-            *d = Color::new(ch[0], ch[1], ch[2], ch[3]);
-        }
-    }
-}
+// Resampling lives in [`crate::smolscale`] — a bit-exact port of chafa's
+// smolscale (gamma-correct, premultiplied linear light). The previous
+// best-effort box/bilinear resampler here has been retired.
 
 #[cfg(test)]
 mod tests {
@@ -208,19 +126,5 @@ mod tests {
         let mut px = [Color::new(10, 20, 30, 0)];
         composite_over_bg(&mut px, Color::new(7, 8, 9, 255));
         assert_eq!(px[0], Color::new(7, 8, 9, 255));
-    }
-
-    #[test]
-    fn scale_identity() {
-        let src = vec![Color::new(1, 2, 3, 255); 4];
-        assert_eq!(scale(&src, 2, 2, 2, 2), src);
-    }
-
-    #[test]
-    fn scale_downscale_averages() {
-        // 2x1 -> 1x1 averages the two pixels.
-        let src = vec![Color::new(0, 0, 0, 255), Color::new(100, 100, 100, 255)];
-        let out = scale(&src, 2, 1, 1, 1);
-        assert_eq!(out[0], Color::new(50, 50, 50, 255));
     }
 }
