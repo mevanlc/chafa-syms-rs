@@ -64,16 +64,18 @@ pub fn has_alpha(pixels: &[Color]) -> bool {
     pixels.iter().any(|p| p.ch[3] != 0xff)
 }
 
-/// Composite straight-alpha pixels over an opaque background:
-/// `(c*a + bg*(255-a)) / 255` per channel, alpha forced opaque. Port of
-/// `composite_alpha_on_bg` (`chafa-pixops.c:643-664`).
+/// Composite straight-alpha pixels over a background: `(c*a + bg*(255-a)) / 255`
+/// per RGB channel. Faithful port of `composite_alpha_on_bg`
+/// (`chafa-pixops.c`): the **alpha channel is left untouched**, so downstream
+/// selection/palette/printer can still apply chafa's `alpha_threshold`
+/// (sub-threshold cells render transparent). chafa only runs this when the
+/// canvas `have_alpha` (any pixel non-opaque) — see [`has_alpha`].
 pub fn composite_over_bg(pixels: &mut [Color], bg: Color) {
     for p in pixels.iter_mut() {
         let a = p.ch[3] as u32;
         for c in 0..3 {
             p.ch[c] = ((p.ch[c] as u32 * a + bg.ch[c] as u32 * (255 - a)) / 255) as u8;
         }
-        p.ch[3] = 0xff;
     }
 }
 
@@ -123,8 +125,10 @@ mod tests {
 
     #[test]
     fn composite_transparent_is_bg() {
+        // Color becomes the background; alpha is retained (chafa leaves ch[3]),
+        // so the selector can still classify the pixel as transparent.
         let mut px = [Color::new(10, 20, 30, 0)];
         composite_over_bg(&mut px, Color::new(7, 8, 9, 255));
-        assert_eq!(px[0], Color::new(7, 8, 9, 255));
+        assert_eq!(px[0], Color::new(7, 8, 9, 0));
     }
 }

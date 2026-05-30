@@ -115,9 +115,12 @@ impl RenderConfig {
         let blank_char = find_best_blank_char(symbol_map, fill_map);
         let solid_char = find_best_solid_char(symbol_map, fill_map);
 
-        // Palette types per mode (setup_palette, chafa-canvas.c:238-294). chafa's
-        // default alpha_threshold is 127. Truecolor uses no palette.
-        const ALPHA_THRESHOLD: u8 = 127;
+        // Palette types per mode (setup_palette, chafa-canvas.c:238-294).
+        // Truecolor uses no palette. The threshold is 128, matching the chafa
+        // *CLI* default: `--threshold 0.5` → `256 * (1 - 0.5) = 128`. (The C
+        // library struct defaults to 127; the CLI — our oracle — overrides it.)
+        // A pixel with alpha < 128 (i.e. <= 127) is treated as transparent.
+        const ALPHA_THRESHOLD: u8 = 128;
         let mk = |t: PaletteType| Palette::new(t, fg_rgb, bg_rgb, ALPHA_THRESHOLD);
         let (fg_palette, bg_palette) = match mode {
             CanvasMode::Truecolor => (None, None),

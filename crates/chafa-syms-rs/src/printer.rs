@@ -249,19 +249,24 @@ impl<'a> Printer<'a> {
     }
 
     fn emit_attributes_256(&mut self, fg: u32, bg: u32, inverted: bool) {
+        // chafa's 256-color sequences take a `guint8` pen, so a special index
+        // that leaks into emission (e.g. `INDEX_FG` 257 on a transparent blank
+        // cell) is truncated to a byte: 257 -> 1, 258 -> 2, 256 -> 0. Normal
+        // indices (0..=255) are unaffected. We replicate that exactly.
+        let (fgb, bgb) = (fg as u8, bg as u8);
         if self.opts.contains(Optimizations::REUSE_ATTRIBUTES) {
             self.handle_attrs_with_reuse(fg, bg, inverted, false);
             if fg != self.cur_fg {
                 if bg != self.cur_bg && bg != TRANSPARENT {
                     self.flush_chars();
-                    self.push(&format!("\x1b[38;5;{fg};48;5;{bg}m"));
+                    self.push(&format!("\x1b[38;5;{fgb};48;5;{bgb}m"));
                 } else if fg != TRANSPARENT {
                     self.flush_chars();
-                    self.push(&format!("\x1b[38;5;{fg}m"));
+                    self.push(&format!("\x1b[38;5;{fgb}m"));
                 }
             } else if bg != self.cur_bg && bg != TRANSPARENT {
                 self.flush_chars();
-                self.push(&format!("\x1b[48;5;{bg}m"));
+                self.push(&format!("\x1b[48;5;{bgb}m"));
             }
         } else {
             self.flush_chars();
@@ -271,12 +276,12 @@ impl<'a> Printer<'a> {
             }
             if fg != TRANSPARENT {
                 if bg != TRANSPARENT {
-                    self.push(&format!("\x1b[38;5;{fg};48;5;{bg}m"));
+                    self.push(&format!("\x1b[38;5;{fgb};48;5;{bgb}m"));
                 } else {
-                    self.push(&format!("\x1b[38;5;{fg}m"));
+                    self.push(&format!("\x1b[38;5;{fgb}m"));
                 }
             } else if bg != TRANSPARENT {
-                self.push(&format!("\x1b[48;5;{bg}m"));
+                self.push(&format!("\x1b[48;5;{bgb}m"));
             }
         }
         self.cur_fg = fg;
@@ -285,19 +290,23 @@ impl<'a> Printer<'a> {
     }
 
     fn emit_attributes_16(&mut self, fg: u32, bg: u32, inverted: bool) {
+        // As with 256-color, chafa's 16-color sequences take a `guint8` pen, so
+        // a leaked special index (e.g. `INDEX_FG` 257) is truncated to a byte
+        // before the aixterm mapping: 257 -> 1 -> `\e[31m`. Truncate first.
+        let (fgb, bgb) = (fg as u8 as u32, bg as u8 as u32);
         if self.opts.contains(Optimizations::REUSE_ATTRIBUTES) {
             self.handle_attrs_with_reuse(fg, bg, inverted, false);
             if fg != self.cur_fg {
                 if bg != self.cur_bg && bg != TRANSPARENT {
                     self.flush_chars();
-                    self.push(&format!("\x1b[{};{}m", aix_fg(fg), aix_bg(bg)));
+                    self.push(&format!("\x1b[{};{}m", aix_fg(fgb), aix_bg(bgb)));
                 } else if fg != TRANSPARENT {
                     self.flush_chars();
-                    self.push(&format!("\x1b[{}m", aix_fg(fg)));
+                    self.push(&format!("\x1b[{}m", aix_fg(fgb)));
                 }
             } else if bg != self.cur_bg && bg != TRANSPARENT {
                 self.flush_chars();
-                self.push(&format!("\x1b[{}m", aix_bg(bg)));
+                self.push(&format!("\x1b[{}m", aix_bg(bgb)));
             }
         } else {
             self.flush_chars();
@@ -307,12 +316,12 @@ impl<'a> Printer<'a> {
             }
             if fg != TRANSPARENT {
                 if bg != TRANSPARENT {
-                    self.push(&format!("\x1b[{};{}m", aix_fg(fg), aix_bg(bg)));
+                    self.push(&format!("\x1b[{};{}m", aix_fg(fgb), aix_bg(bgb)));
                 } else {
-                    self.push(&format!("\x1b[{}m", aix_fg(fg)));
+                    self.push(&format!("\x1b[{}m", aix_fg(fgb)));
                 }
             } else if bg != TRANSPARENT {
-                self.push(&format!("\x1b[{}m", aix_bg(bg)));
+                self.push(&format!("\x1b[{}m", aix_bg(bgb)));
             }
         }
         self.cur_fg = fg;
