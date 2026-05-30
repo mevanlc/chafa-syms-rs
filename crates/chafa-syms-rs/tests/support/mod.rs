@@ -177,6 +177,93 @@ pub fn oracle_render(
     parse_dump(&dump)
 }
 
+/// chafa's post-prep pixel grid plus its resulting cell grid, captured together
+/// so the Rust selection core can be fed the exact same pixels (Phase 4 gate).
+pub struct OracleRender {
+    pub width_px: usize,
+    pub height_px: usize,
+    pub pixels: Vec<Color>,
+    pub grid: OracleGrid,
+}
+
+/// Run the oracle capturing both the post-prep pixels (`CHAFA_DUMP_PIXELS`) and
+/// the resulting cells (`CHAFA_DUMP_CELLS`). `extra_args` carries mode/symbol
+/// flags. Deterministic tiebreak enabled.
+pub fn oracle_render_dump(
+    pixels: &[u8],
+    w: u32,
+    h: u32,
+    cols: u32,
+    rows: u32,
+    extra_args: &[&str],
+) -> OracleRender {
+    assert_eq!(pixels.len(), (w * h * 4) as usize, "RGBA8 buffer size");
+    let png_path = unique_tmp("png");
+    let px_path = unique_tmp("px");
+    let cells_path = unique_tmp("cells");
+    image::save_buffer(&png_path, pixels, w, h, image::ColorType::Rgba8).expect("write PNG");
+
+    let size = format!("{cols}x{rows}");
+    let mut args: Vec<String> = vec![
+        "-f".into(),
+        "symbols".into(),
+        "--color-space".into(),
+        "rgb".into(),
+        "-O".into(),
+        "0".into(),
+        "--size".into(),
+        size,
+        "--stretch".into(),
+    ];
+    for a in extra_args {
+        args.push((*a).into());
+    }
+    args.push(png_path.to_string_lossy().into_owned());
+
+    let output = Command::new(oracle_bin())
+        .args(&args)
+        .env("CHAFA_DUMP_PIXELS", &px_path)
+        .env("CHAFA_DUMP_CELLS", &cells_path)
+        .env("DYLD_LIBRARY_PATH", oracle_lib())
+        .env("CHAFA_SYMS_RS_TIEBREAK", "1")
+        .output()
+        .expect("run oracle");
+    assert!(
+        output.status.success(),
+        "oracle failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let px_bytes = std::fs::read(&px_path).expect("read pixel dump");
+    let cells = std::fs::read_to_string(&cells_path).expect("read cells dump");
+    let _ = std::fs::remove_file(&png_path);
+    let _ = std::fs::remove_file(&px_path);
+    let _ = std::fs::remove_file(&cells_path);
+
+    // Pixel dump: "W H\n" header then W*H*4 raw RGBA bytes.
+    let nl = px_bytes
+        .iter()
+        .position(|&b| b == b'\n')
+        .expect("pixel header");
+    let header = std::str::from_utf8(&px_bytes[..nl]).unwrap();
+    let mut hp = header.split_whitespace();
+    let width_px: usize = hp.next().unwrap().parse().unwrap();
+    let height_px: usize = hp.next().unwrap().parse().unwrap();
+    let body = &px_bytes[nl + 1..];
+    assert_eq!(body.len(), width_px * height_px * 4, "pixel body size");
+    let pixels: Vec<Color> = body
+        .chunks_exact(4)
+        .map(|c| Color::new(c[0], c[1], c[2], c[3]))
+        .collect();
+
+    OracleRender {
+        width_px,
+        height_px,
+        pixels,
+        grid: parse_dump(&cells),
+    }
+}
+
 /// One symbol-map entry from `CHAFA_DUMP_SYMMAP` (codepoint + popcount).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SymMapEntry {

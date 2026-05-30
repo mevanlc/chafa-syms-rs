@@ -170,6 +170,25 @@ impl SymbolMap {
         self.ensure_built();
     }
 
+    /// Immutable view of the compiled narrow symbols. Caller must have
+    /// [`prepare`](Self::prepare)d first.
+    pub fn symbols_ref(&self) -> &[Symbol] {
+        debug_assert!(!self.dirty, "SymbolMap not prepared");
+        &self.symbols
+    }
+
+    /// Immutable view of the compiled wide symbols (must be prepared).
+    pub fn wide_symbols_ref(&self) -> &[WideSymbol] {
+        debug_assert!(!self.dirty, "SymbolMap not prepared");
+        &self.symbols_wide
+    }
+
+    /// Whether codepoint `c` is present in the compiled map (narrow or wide).
+    /// Port of `chafa_symbol_map_has_symbol`.
+    pub fn has_symbol(&self, c: char) -> bool {
+        self.symbols.iter().any(|s| s.c == c) || self.symbols_wide.iter().any(|s| s.sym[0].c == c)
+    }
+
     fn ensure_built(&mut self) {
         if self.dirty {
             self.rebuild();
