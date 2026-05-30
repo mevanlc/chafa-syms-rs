@@ -11,5 +11,7 @@
 
 pub mod color;
 pub mod geometry;
+pub mod symbol;
 
 pub use color::{color_diff, Color, ColorPair, COLOR_PAIR_BG, COLOR_PAIR_FG};
+pub use symbol::{Symbol, SymbolTags, WideSymbol};

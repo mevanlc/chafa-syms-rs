@@ -175,6 +175,92 @@ pub fn oracle_render(
     parse_dump(&dump)
 }
 
+/// One narrow symbol from the `CHAFA_DUMP_SYMBOLS` ground-truth dump.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DumpNarrow {
+    pub c: u32,
+    pub sc: u32,
+    pub popcount: u32,
+    pub bitmap: u64,
+}
+
+/// One wide symbol from the dump (both halves share `c`/`sc`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DumpWide {
+    pub c: u32,
+    pub sc: u32,
+    pub popcount: [u32; 2],
+    pub bitmap: [u64; 2],
+}
+
+/// Capture chafa's fully-initialized builtin symbol arrays via the
+/// `CHAFA_DUMP_SYMBOLS` patch. Runs the oracle once on a 1x1 fixture.
+pub fn oracle_dump_symbols() -> (Vec<DumpNarrow>, Vec<DumpWide>) {
+    let png_path = unique_tmp("png");
+    let dump_path = unique_tmp("syms");
+    image::save_buffer(&png_path, &[0u8, 0, 0, 0xff], 1, 1, image::ColorType::Rgba8)
+        .expect("write 1x1 fixture");
+
+    let output = Command::new(oracle_bin())
+        .args([
+            "-f",
+            "symbols",
+            "--color-space",
+            "rgb",
+            "-O",
+            "0",
+            "--size",
+            "1x1",
+            "--stretch",
+        ])
+        .arg(&png_path)
+        .env("CHAFA_DUMP_SYMBOLS", &dump_path)
+        .env("DYLD_LIBRARY_PATH", oracle_lib())
+        .output()
+        .expect("run oracle");
+    assert!(output.status.success(), "oracle failed for symbol dump");
+
+    let text = std::fs::read_to_string(&dump_path).expect("read symbol dump");
+    let _ = std::fs::remove_file(&png_path);
+    let _ = std::fs::remove_file(&dump_path);
+
+    let mut lines = text.lines();
+    let nhdr = lines.next().unwrap();
+    let n: usize = nhdr.strip_prefix("NARROW ").unwrap().parse().unwrap();
+    let mut narrow = Vec::with_capacity(n);
+    for _ in 0..n {
+        let l = lines.next().unwrap();
+        let mut p = l.split_whitespace();
+        narrow.push(DumpNarrow {
+            c: p.next().unwrap().parse().unwrap(),
+            sc: p.next().unwrap().parse().unwrap(),
+            popcount: p.next().unwrap().parse().unwrap(),
+            bitmap: u64::from_str_radix(p.next().unwrap(), 16).unwrap(),
+        });
+    }
+    let whdr = lines.next().unwrap();
+    let m: usize = whdr.strip_prefix("WIDE ").unwrap().parse().unwrap();
+    let mut wide = Vec::with_capacity(m);
+    for _ in 0..m {
+        let l = lines.next().unwrap();
+        let mut p = l.split_whitespace();
+        wide.push(DumpWide {
+            c: p.next().unwrap().parse().unwrap(),
+            sc: p.next().unwrap().parse().unwrap(),
+            popcount: [
+                p.next().unwrap().parse().unwrap(),
+                p.next().unwrap().parse().unwrap(),
+            ],
+            bitmap: [
+                u64::from_str_radix(p.next().unwrap(), 16).unwrap(),
+                u64::from_str_radix(p.next().unwrap(), 16).unwrap(),
+            ],
+        });
+    }
+
+    (narrow, wide)
+}
+
 /// Parse the `CHAFA_DUMP_CELLS` file format:
 /// first line `W H`, then one line per cell `cx cy codepoint fg_hex bg_hex`.
 pub fn parse_dump(s: &str) -> OracleGrid {
