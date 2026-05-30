@@ -71,3 +71,77 @@ index 587764c..cc43fec 100644
      if (term_info)
          chafa_term_info_ref (term_info);
      else
+diff --git a/chafa/internal/chafa-symbols.c b/chafa/internal/chafa-symbols.c
+index bebfe2e..df3d014 100644
+--- a/chafa/internal/chafa-symbols.c
++++ b/chafa/internal/chafa-symbols.c
+@@ -19,6 +19,7 @@
+ 
+ #include "config.h"
+ 
++#include <stdio.h>
+ #include <string.h>  /* memset */
+ #include "chafa.h"
+ #include "internal/chafa-private.h"
+@@ -637,6 +638,52 @@ init_symbol_array_wide (const ChafaSymbolDef *defs)
+     return syms;
+ }
+ 
++/* chafa-syms-rs parity oracle: dump the fully-initialized builtin symbol
++ * arrays (narrow + wide) to the file named by CHAFA_DUMP_SYMBOLS. This is the
++ * ground truth the Rust port's symbol layer (parsed outlines + ported
++ * braille/sextant/octant generators + tag derivation) is validated against,
++ * neutralizing the GLib-Unicode-version parity risk. No effect unless set. */
++static void
++chafa_syms_rs_dump_symbols (void)
++{
++    const gchar *path = g_getenv ("CHAFA_DUMP_SYMBOLS");
++    FILE *df;
++    gint n, m, i;
++
++    if (!path)
++        return;
++
++    df = fopen (path, "w");
++    if (!df)
++        return;
++
++    for (n = 0; chafa_symbols [n].c; n++)
++        ;
++    for (m = 0; chafa_symbols2 [m].sym [0].c; m++)
++        ;
++
++    fprintf (df, "NARROW %d\n", n);
++    for (i = 0; i < n; i++)
++    {
++        ChafaSymbol *s = &chafa_symbols [i];
++        fprintf (df, "%u %u %d %016" G_GINT64_MODIFIER "x\n",
++                 (unsigned) s->c, (unsigned) s->sc, s->popcount,
++                 (guint64) s->bitmap);
++    }
++
++    fprintf (df, "WIDE %d\n", m);
++    for (i = 0; i < m; i++)
++    {
++        ChafaSymbol2 *s = &chafa_symbols2 [i];
++        fprintf (df, "%u %u %d %d %016" G_GINT64_MODIFIER "x %016" G_GINT64_MODIFIER "x\n",
++                 (unsigned) s->sym [0].c, (unsigned) s->sym [0].sc,
++                 s->sym [0].popcount, s->sym [1].popcount,
++                 (guint64) s->sym [0].bitmap, (guint64) s->sym [1].bitmap);
++    }
++
++    fclose (df);
++}
++
+ void
+ chafa_init_symbols (void)
+ {
+@@ -647,6 +694,8 @@ chafa_init_symbols (void)
+     chafa_symbols2 = init_symbol_array_wide (symbol_defs);
+ 
+     symbols_initialized = TRUE;
++
++    chafa_syms_rs_dump_symbols ();
+ }
+ 
+ ChafaSymbolTags

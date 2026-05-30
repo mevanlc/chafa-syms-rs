@@ -45,6 +45,20 @@ env var names a file (and the canvas is in symbol mode), it writes:
 chafa's packed `0xAARRGGBB` in truecolor; in indexed modes they are palette
 indices. No effect unless the env var is set.
 
+The patch also adds `chafa_syms_rs_dump_symbols()`, called at the end of
+`chafa_init_symbols`. When `CHAFA_DUMP_SYMBOLS` names a file it writes the
+fully-initialized builtin symbol arrays — ground truth for the Phase 2 symbol
+gate:
+
+```
+NARROW <n>
+<codepoint> <sc> <popcount> <bitmap_hex>      (one line per narrow symbol)
+...
+WIDE <m>
+<codepoint> <sc> <pc_left> <pc_right> <bitmap_left_hex> <bitmap_right_hex>
+...
+```
+
 ## Using it from tests
 
 `crates/chafa-syms-rs/tests/support/mod.rs` locates the binary via
