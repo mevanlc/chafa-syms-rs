@@ -9,16 +9,20 @@
 //!
 //! See `devdocs/PLAN.md` for the full design and the C-source map.
 
+pub mod canvas;
 pub mod color;
 pub mod geometry;
 pub mod palette;
+pub mod pixops;
 pub mod printer;
 pub mod select;
 pub mod symbol;
 pub mod symbol_map;
 pub mod work_cell;
 
+pub use canvas::{Canvas, CanvasConfig};
 pub use color::{color_diff, Color, ColorPair, COLOR_PAIR_BG, COLOR_PAIR_FG};
+pub use pixops::PixelType;
 pub use printer::{print_cells, Optimizations};
 pub use select::{render_cells, CanvasMode, CellOut, RenderConfig};
 pub use symbol::{Symbol, SymbolTags, WideSymbol};

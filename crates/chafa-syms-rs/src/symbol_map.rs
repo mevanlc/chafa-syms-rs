@@ -48,7 +48,7 @@ impl std::error::Error for SelectorParseError {}
 
 /// A set of symbols, selected from the builtin glyph set by an ordered list of
 /// selectors and compiled into popcount-sorted arrays for matching.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SymbolMap {
     selectors: Vec<Selector>,
     use_builtin_glyphs: bool,
