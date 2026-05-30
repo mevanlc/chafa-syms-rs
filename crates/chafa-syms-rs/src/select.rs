@@ -8,6 +8,7 @@
 
 use crate::color::{color_average_2, color_diff, Color, ColorPair, COLOR_PAIR_BG, COLOR_PAIR_FG};
 use crate::geometry::{N_BUF_CELLS, N_CANDIDATES_MAX, SYMBOL_ERROR_MAX, SYMBOL_N_PIXELS};
+use crate::palette::{Palette, PaletteType, INDEX_FG, INDEX_TRANSPARENT};
 use crate::symbol::Symbol;
 use crate::symbol_map::{Candidate, SymbolMap};
 use crate::work_cell::WorkCell;
@@ -46,8 +47,7 @@ fn transparent_cell_color(mode: CanvasMode) -> u32 {
     if mode == CanvasMode::Truecolor {
         pack_color(Color::new(0x80, 0x80, 0x80, 0x00))
     } else {
-        // CHAFA_PALETTE_INDEX_TRANSPARENT
-        256
+        INDEX_TRANSPARENT as u32
     }
 }
 
@@ -64,6 +64,10 @@ pub struct RenderConfig {
     pub use_quantized_error: bool,
     pub blank_char: u32,
     pub solid_char: u32,
+    /// fg/bg palettes (`None` in truecolor). For Indexed16_8, `fg` is Fixed16
+    /// and `bg` is Fixed8; otherwise both share the mode's palette type.
+    pub fg_palette: Option<Palette>,
+    pub bg_palette: Option<Palette>,
 }
 
 impl RenderConfig {
@@ -106,6 +110,35 @@ impl RenderConfig {
         let blank_char = find_best_blank_char(symbol_map, fill_map);
         let solid_char = find_best_solid_char(symbol_map, fill_map);
 
+        // Palette types per mode (setup_palette, chafa-canvas.c:238-294). chafa's
+        // default alpha_threshold is 127. Truecolor uses no palette.
+        const ALPHA_THRESHOLD: u8 = 127;
+        let mk = |t: PaletteType| Palette::new(t, fg_rgb, bg_rgb, ALPHA_THRESHOLD);
+        let (fg_palette, bg_palette) = match mode {
+            CanvasMode::Truecolor => (None, None),
+            CanvasMode::Indexed256 => (
+                Some(mk(PaletteType::Fixed256)),
+                Some(mk(PaletteType::Fixed256)),
+            ),
+            CanvasMode::Indexed240 => (
+                Some(mk(PaletteType::Fixed240)),
+                Some(mk(PaletteType::Fixed240)),
+            ),
+            CanvasMode::Indexed16 => (
+                Some(mk(PaletteType::Fixed16)),
+                Some(mk(PaletteType::Fixed16)),
+            ),
+            CanvasMode::Indexed16_8 => (
+                Some(mk(PaletteType::Fixed16)),
+                Some(mk(PaletteType::Fixed8)),
+            ),
+            CanvasMode::Indexed8 => (Some(mk(PaletteType::Fixed8)), Some(mk(PaletteType::Fixed8))),
+            CanvasMode::FgbgBgfg | CanvasMode::Fgbg => (
+                Some(mk(PaletteType::FixedFgbg)),
+                Some(mk(PaletteType::FixedFgbg)),
+            ),
+        };
+
         RenderConfig {
             mode,
             work_factor_int: (work_factor * 10.0 + 0.5) as i32,
@@ -116,6 +149,8 @@ impl RenderConfig {
             use_quantized_error,
             blank_char,
             solid_char,
+            fg_palette,
+            bg_palette,
         }
     }
 }
@@ -216,17 +251,35 @@ fn eval_symbol(
     } else {
         wcell.mean_colors_for_symbol(sym)
     };
-    // use_quantized_error is false for all Phase 4 modes (truecolor/fgbg/fg-only),
-    // so error is computed against the raw extracted colors (no palette snap).
-    debug_assert!(
-        !cfg.use_quantized_error,
-        "quantized error needs Phase 6 palette"
-    );
-    let error = calc_cell_error(&wcell.pixels, &colors, &sym.coverage());
+    // Error is scored against palette-snapped colors when use_quantized_error
+    // (Indexed16_8); otherwise against the raw extracted colors. The *result*
+    // colors (`best.colors`) remain the extracted ones either way.
+    let error = symbol_error(cfg, &wcell.pixels, &colors, &sym.coverage());
     if error < best.error {
         *best_index = sym_index as i64;
         *best = SymbolEval { colors, error };
     }
+}
+
+/// Port of `eval_symbol_error`: compute cell error, snapping fg/bg to the
+/// palettes first when `use_quantized_error`.
+fn symbol_error(
+    cfg: &RenderConfig,
+    pixels: &[Color; SYMBOL_N_PIXELS],
+    colors: &ColorPair,
+    cov: &[u8; SYMBOL_N_PIXELS],
+) -> i32 {
+    let pair = if cfg.use_quantized_error {
+        let fp = cfg.fg_palette.as_ref().unwrap();
+        let bp = cfg.bg_palette.as_ref().unwrap();
+        let mut p = ColorPair::default();
+        p.colors[COLOR_PAIR_FG] = fp.color_at(fp.lookup_nearest(colors.colors[COLOR_PAIR_FG]));
+        p.colors[COLOR_PAIR_BG] = bp.color_at(bp.lookup_nearest(colors.colors[COLOR_PAIR_BG]));
+        p
+    } else {
+        *colors
+    };
+    calc_cell_error(pixels, &pair, cov)
 }
 
 struct SymbolEval2 {
@@ -257,8 +310,8 @@ fn eval_symbol_wide(
             color_average_2(pa.colors[COLOR_PAIR_BG], pb.colors[COLOR_PAIR_BG]);
         c
     };
-    let e0 = calc_cell_error(&wa.pixels, &colors, &sym_a.coverage());
-    let e1 = calc_cell_error(&wb.pixels, &colors, &sym_b.coverage());
+    let e0 = symbol_error(cfg, &wa.pixels, &colors, &sym_a.coverage());
+    let e1 = symbol_error(cfg, &wb.pixels, &colors, &sym_b.coverage());
     if e0 + e1 < best.error[0] + best.error[1] {
         *best_index = sym_index as i64;
         *best = SymbolEval2 {
@@ -415,18 +468,52 @@ fn pick_symbol_and_colors_wide(
     ))
 }
 
-/// Port of `update_cell_colors`. Truecolor packs; fg-only forces transparent BG.
-/// Indexed/fgbg palette quantization is added in Phase 6.
+/// Port of `update_cell_colors`. Truecolor packs `0xAARRGGBB`; indexed/fgbg
+/// modes store palette indices; Indexed16_8 uses a dedicated quantizer.
 fn update_cell_colors(cfg: &RenderConfig, cell: &mut CellOut, pair: &ColorPair) {
     match cfg.mode {
+        CanvasMode::Indexed256
+        | CanvasMode::Indexed240
+        | CanvasMode::Indexed16
+        | CanvasMode::Indexed8
+        | CanvasMode::FgbgBgfg
+        | CanvasMode::Fgbg => {
+            let fp = cfg.fg_palette.as_ref().unwrap();
+            let bp = cfg.bg_palette.as_ref().unwrap();
+            cell.fg = fp.lookup_nearest(pair.colors[COLOR_PAIR_FG]) as u32;
+            cell.bg = bp.lookup_nearest(pair.colors[COLOR_PAIR_BG]) as u32;
+        }
+        CanvasMode::Indexed16_8 => quantize_colors_for_cell_16_8(cfg, cell, pair),
         CanvasMode::Truecolor => {
             cell.fg = pack_color(pair.colors[COLOR_PAIR_FG]);
             cell.bg = pack_color(pair.colors[COLOR_PAIR_BG]);
         }
-        _ => unimplemented!("palette-quantized modes land in Phase 6"),
     }
     if cfg.fg_only {
         cell.bg = transparent_cell_color(cfg.mode);
+    }
+}
+
+/// Port of `quantize_colors_for_cell_16_8` (`chafa-symbol-renderer.c:656-697`):
+/// fg from the 16-palette, bg from the 8-palette, with a solid-char fallback
+/// when both land on the same (8..15) color the bg palette can't represent.
+fn quantize_colors_for_cell_16_8(cfg: &RenderConfig, cell: &mut CellOut, pair: &ColorPair) {
+    let fp = cfg.fg_palette.as_ref().unwrap();
+    let bp = cfg.bg_palette.as_ref().unwrap();
+    cell.fg = fp.lookup_nearest(pair.colors[COLOR_PAIR_FG]) as u32;
+    cell.bg = fp.lookup_nearest(pair.colors[COLOR_PAIR_BG]) as u32;
+
+    if cell.fg == cell.bg && (8..=15).contains(&cell.fg) {
+        if cfg.solid_char != 0 {
+            cell.c = cfg.solid_char;
+            cell.bg = bp.lookup_nearest(pair.colors[COLOR_PAIR_FG]) as u32;
+        } else {
+            let v = bp.lookup_nearest(pair.colors[COLOR_PAIR_FG]) as u32;
+            cell.fg = v;
+            cell.bg = v;
+        }
+    } else {
+        cell.bg = bp.lookup_nearest(pair.colors[COLOR_PAIR_BG]) as u32;
     }
 }
 
@@ -586,6 +673,8 @@ fn update_cells_row(
                 cells[base + cx].fg = prev_fg;
                 if cfg.mode == CanvasMode::Truecolor {
                     cells[base + cx].fg |= 0xff00_0000;
+                } else if cells[base + cx].fg == INDEX_TRANSPARENT as u32 {
+                    cells[base + cx].fg = INDEX_FG as u32;
                 }
             }
         }

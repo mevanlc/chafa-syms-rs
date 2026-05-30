@@ -152,6 +152,103 @@ fn truecolor_min_candidates_work1() {
     run_case_work("block,border,space-wide", false, 1);
 }
 
+/// Run a parity case in a given color mode (exercises palette lookup +
+/// per-mode `update_cell_colors` + the `use_quantized_error` / `extract_colors`
+/// selection branches). Cells store palette indices in non-truecolor modes.
+fn run_mode(colors_flag: &str, mode: CanvasMode, symbols: &str, fg_only: bool) {
+    if !oracle_available() {
+        eprintln!("SKIP: oracle binary not found");
+        return;
+    }
+    let (cols, rows) = (20u32, 12u32);
+    let (buf, w, h) = varied_image(cols, rows);
+
+    let mut args: Vec<&str> = vec!["-c", colors_flag, "--symbols", symbols];
+    if fg_only {
+        args.push("--fg-only");
+    }
+    let render = oracle_render_dump(&buf, w, h, cols, rows, &args);
+
+    let mut map = SymbolMap::new();
+    map.apply_selectors(symbols).unwrap();
+    map.prepare();
+    let cfg = RenderConfig::new(mode, fg_only, 0xffffff, 0x000000, 0.5, &map, None);
+    let cells = render_cells(
+        &cfg,
+        &map,
+        None,
+        &render.pixels,
+        render.width_px,
+        render.height_px,
+    );
+    compare_cells(&format!("{colors_flag} {symbols}"), &cells, &render.grid);
+}
+
+#[test]
+fn indexed_256() {
+    run_mode(
+        "256",
+        CanvasMode::Indexed256,
+        "block,border,space-wide",
+        false,
+    );
+}
+
+#[test]
+fn indexed_240() {
+    run_mode(
+        "240",
+        CanvasMode::Indexed240,
+        "block,border,space-wide",
+        false,
+    );
+}
+
+#[test]
+fn indexed_16() {
+    run_mode(
+        "16",
+        CanvasMode::Indexed16,
+        "block,border,space-wide",
+        false,
+    );
+}
+
+#[test]
+fn indexed_8() {
+    run_mode("8", CanvasMode::Indexed8, "block,border,space-wide", false);
+}
+
+#[test]
+fn indexed_16_8_quantized_error() {
+    // use_quantized_error path: colors snapped to fg/bg palettes before scoring,
+    // which can change the symbol picked.
+    run_mode(
+        "16/8",
+        CanvasMode::Indexed16_8,
+        "block,border,space-wide",
+        false,
+    );
+}
+
+#[test]
+fn fgbg_mode() {
+    // -c none -> FGBG: extract_colors=false, forced fg_only; selection vs fixed
+    // default_colors.
+    run_mode("none", CanvasMode::Fgbg, "block,border,space-wide", false);
+}
+
+#[test]
+fn fgbg_bgfg_mode() {
+    // -c 2 -> FGBG_BGFG: extract_colors=false but not fg_only.
+    run_mode("2", CanvasMode::FgbgBgfg, "block,border,space-wide", false);
+}
+
+#[test]
+fn indexed_256_all_symbols() {
+    run_mode("256", CanvasMode::Indexed256, "all", false);
+}
+
 #[test]
 fn wide_lookback_is_exercised() {
     // Confirm the 'all' set actually produces wide cells (c==0 continuations),

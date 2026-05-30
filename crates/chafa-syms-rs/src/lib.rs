@@ -11,6 +11,7 @@
 
 pub mod color;
 pub mod geometry;
+pub mod palette;
 pub mod select;
 pub mod symbol;
 pub mod symbol_map;
