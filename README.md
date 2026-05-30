@@ -110,7 +110,7 @@ crates/chafa-syms-rs/   the library
   src/pixops.rs         input formats + alpha composite
   src/smolscale.rs      bit-exact smolscale resampler (+ smolscale_luts.rs)
   src/canvas.rs         high-level Canvas/CanvasConfig API
-crates/chafa-syms/      the CLI
+crates/chafa-syms-cli/  the CLI (bin name: chafa-syms)
 tools/transcode-symbols/ one-shot codegen: chafa headers -> symbol/data.rs
 devdocs/                PLAN.md + oracle patch & docs
 ```

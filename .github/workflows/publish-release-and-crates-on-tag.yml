@@ -156,7 +156,7 @@ jobs:
           VERSION="$RELEASE_VERSION"
 
           verify_then_publish chafa-syms-rs "$VERSION"
-          verify_then_publish chafa-syms "$VERSION"
+          verify_then_publish chafa-syms-cli "$VERSION"
 
       - name: Delete release if publish phase fails
         if: failure() && steps.create_release.outcome == 'success'

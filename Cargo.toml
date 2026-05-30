@@ -2,7 +2,7 @@
 resolver = "2"
 members = [
     "crates/chafa-syms-rs",
-    "crates/chafa-syms",
+    "crates/chafa-syms-cli",
     "tools/transcode-symbols",
 ]
 

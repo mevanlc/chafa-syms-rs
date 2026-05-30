@@ -1,5 +1,5 @@
 [package]
-name = "chafa-syms"
+name = "chafa-syms-cli"
 description = "Demo/test CLI for chafa-syms-rs: render images as tunable Unicode symbol art."
 version.workspace = true
 edition.workspace = true
