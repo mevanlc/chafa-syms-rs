@@ -22,7 +22,7 @@ by differential tests:
 | Layer | Gate | Status |
 |-------|------|--------|
 | Builtin symbol set (1261 narrow + 181 wide) | every codepoint, tag, popcount, bitmap vs `chafa_symbols[]` | ✅ exact |
-| Symbol map (selectors, dedup, sort) | compiled codepoints + order vs `symbol_map->symbols` | ✅ exact |
+| Symbol map (selectors: tags, ranges, codepoints, `[...]` sets; dedup, sort) | compiled codepoints + order vs `symbol_map->symbols` | ✅ exact |
 | Selection core (symbol + colors per cell) | `(char, fg, bg)` vs chafa's cells, all color modes × work levels × fg-only, fed chafa's exact pixels | ✅ exact |
 | Printer (cells → ANSI) | byte-exact vs chafa's canonical output, all modes × `-O 0/5/6` | ✅ exact |
 | End-to-end (image → ANSI) | byte-exact vs chafa for pre-sized opaque inputs (`-p off`) | ✅ exact |
@@ -54,6 +54,11 @@ differ on ~3% of cells — all genuinely arbitrary ties. See
   the parity gate). Pass a pre-sized buffer for exact selection.
 - **Preprocessing:** chafa's `normalize_rgb`/saturation preprocessing (applied
   to 16/8/fgbg modes) is not ported; the library behaves as `--preprocess off`.
+- **User-imported glyphs:** the selector engine's RTL / zero-width /
+  non-printable exclusion branches exist for chafa's user-glyph import, which is
+  out of scope here. They are inert for the builtin glyph set (no builtin is
+  RTL/combining/non-printable), so builtin selection is exact; per-codepoint
+  membership of arbitrary *imported* glyphs is not validated.
 - DIN99d / non-sRGB color spaces; dithering; PCA / dynamic palettes; sixel /
   kitty / iterm2 graphics; image *file* decoding in the library; tty probes.
 
