@@ -1,0 +1,18 @@
+[package]
+name = "chafa-syms"
+description = "Demo/test CLI for chafa-syms-rs: render images as tunable Unicode symbol art."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "chafa-syms"
+path = "src/main.rs"
+
+[dependencies]
+chafa-syms-rs.workspace = true
+clap.workspace = true
+image.workspace = true
+terminal_size.workspace = true

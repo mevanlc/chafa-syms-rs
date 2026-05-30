@@ -1,0 +1,23 @@
+[package]
+name = "chafa-syms-rs"
+description = "Pure-Rust port of chafa's symbol-rendering core: tunable Unicode symbol rendering of raster graphics."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "chafa_syms_rs"
+path = "src/lib.rs"
+
+[dependencies]
+rayon.workspace = true
+bitflags.workspace = true
+unicode-width.workspace = true
+unicode-properties.workspace = true
+
+[dev-dependencies]
+# Used only by the differential-oracle test harness to write PNG fixtures that
+# are fed to the patched chafa binary (see tests/support/mod.rs).
+image = { workspace = true }

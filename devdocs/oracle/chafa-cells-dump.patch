@@ -1,0 +1,73 @@
+diff --git a/chafa/chafa-canvas.c b/chafa/chafa-canvas.c
+index 587764c..cc43fec 100644
+--- a/chafa/chafa-canvas.c
++++ b/chafa/chafa-canvas.c
+@@ -20,6 +20,7 @@
+ #include "config.h"
+ 
+ #include <math.h>
++#include <stdio.h>
+ #include <string.h>
+ #include <glib.h>
+ #include "chafa.h"
+@@ -846,6 +847,42 @@ chafa_canvas_build_ansi (ChafaCanvas *canvas)
+     return chafa_canvas_print (canvas, NULL);
+ }
+ 
++/* chafa-syms-rs parity oracle: dump per-cell (codepoint, fg_color, bg_color)
++ * to the file named by the CHAFA_DUMP_CELLS env var. Exposes the symbol
++ * renderer's internal cell state directly, bypassing all printer encoding
++ * (SGR 7 inversion, space optimization, etc.), so the Rust port can validate
++ * its selection core against chafa's actual picks. No effect unless the env
++ * var is set and the canvas is in symbol mode. */
++static void
++chafa_syms_rs_dump_cells (ChafaCanvas *canvas)
++{
++    const gchar *dump_path = g_getenv ("CHAFA_DUMP_CELLS");
++    FILE *df;
++    gint cx, cy, w, h;
++
++    if (!dump_path || canvas->config.pixel_mode != CHAFA_PIXEL_MODE_SYMBOLS || !canvas->cells)
++        return;
++
++    df = fopen (dump_path, "w");
++    if (!df)
++        return;
++
++    w = canvas->config.width;
++    h = canvas->config.height;
++    fprintf (df, "%d %d\n", w, h);
++    for (cy = 0; cy < h; cy++)
++    {
++        for (cx = 0; cx < w; cx++)
++        {
++            ChafaCanvasCell *cell = &canvas->cells [(gsize) cy * (gsize) w + cx];
++            fprintf (df, "%d %d %u %08x %08x\n",
++                     cx, cy, (unsigned) cell->c,
++                     (unsigned) cell->fg_color, (unsigned) cell->bg_color);
++        }
++    }
++    fclose (df);
++}
++
+ /**
+  * chafa_canvas_print:
+  * @canvas: The canvas to generate a printable representation of
+@@ -871,6 +908,8 @@ chafa_canvas_print (ChafaCanvas *canvas, ChafaTermInfo *term_info)
+     g_return_val_if_fail (canvas != NULL, NULL);
+     g_return_val_if_fail (canvas->refs > 0, NULL);
+ 
++    chafa_syms_rs_dump_cells (canvas);
++
+     if (term_info)
+         chafa_term_info_ref (term_info);
+     else
+@@ -956,6 +995,8 @@ chafa_canvas_print_rows (ChafaCanvas *canvas, ChafaTermInfo *term_info,
+     g_return_if_fail (canvas->refs > 0);
+     g_return_if_fail (array_out != NULL);
+ 
++    chafa_syms_rs_dump_cells (canvas);
++
+     if (term_info)
+         chafa_term_info_ref (term_info);
+     else

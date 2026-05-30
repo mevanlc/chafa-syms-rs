@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/chafa-syms-rs",
+    "crates/chafa-syms",
+    "tools/transcode-symbols",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/mevanlc/chafa-syms-rs"
+rust-version = "1.74"
+
+[workspace.dependencies]
+chafa-syms-rs = { path = "crates/chafa-syms-rs" }
+rayon = "1.10"
+bitflags = "2.6"
+unicode-width = "0.2"
+unicode-properties = "0.1"
+clap = { version = "4.5", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp"] }
+terminal_size = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = "thin"

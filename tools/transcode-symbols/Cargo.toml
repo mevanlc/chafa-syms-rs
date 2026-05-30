@@ -1,0 +1,11 @@
+[package]
+name = "transcode-symbols"
+description = "One-shot codegen: parse chafa-symbols-*.h outline tables into Rust (src/symbol/data.rs)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "transcode-symbols"
+path = "src/main.rs"
