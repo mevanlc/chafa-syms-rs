@@ -16,3 +16,4 @@ chafa-syms-rs.workspace = true
 clap.workspace = true
 image.workspace = true
 terminal_size.workspace = true
+rayon.workspace = true
