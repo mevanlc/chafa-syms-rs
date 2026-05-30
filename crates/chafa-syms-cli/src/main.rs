@@ -127,14 +127,7 @@ fn run(args: &Args) -> Result<(), String> {
     let (cols, rows) = geometry(args, iw, ih, max_cols, max_rows);
 
     // Config.
-    let mut symbol_map = match &args.symbols {
-        Some(s) => {
-            let mut m = SymbolMap::new();
-            m.apply_selectors(s).map_err(|e| e.0)?;
-            m
-        }
-        None => default_cli_symbols(mode),
-    };
+    let mut symbol_map = cli_symbols(mode, args.symbols.as_deref())?;
     symbol_map.prepare();
 
     let cfg = CanvasConfig::new(cols, rows)
@@ -162,6 +155,14 @@ fn default_cli_symbols(mode: CanvasMode) -> SymbolMap {
         m.apply_selectors("-inverted").unwrap();
     }
     m
+}
+
+fn cli_symbols(mode: CanvasMode, selectors: Option<&str>) -> Result<SymbolMap, String> {
+    let mut m = default_cli_symbols(mode);
+    if let Some(s) = selectors {
+        m.apply_selectors(s).map_err(|e| e.0)?;
+    }
+    Ok(m)
 }
 
 fn parse_mode(s: &str) -> Result<CanvasMode, String> {
@@ -292,5 +293,28 @@ fn parse_size(s: &str) -> Option<(Option<usize>, Option<usize>)> {
         Some((c, r))
     } else {
         s.parse().ok().map(|c| (Some(c), None))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plus_symbols_augments_cli_default_map() {
+        let mut map = cli_symbols(CanvasMode::Truecolor, Some("+sextant")).unwrap();
+        map.prepare();
+
+        assert!(map.has_symbol('\u{1fb00}'));
+        assert!(map.has_symbol('\u{2574}'));
+    }
+
+    #[test]
+    fn bare_symbols_replace_cli_default_map() {
+        let mut map = cli_symbols(CanvasMode::Truecolor, Some("sextant")).unwrap();
+        map.prepare();
+
+        assert!(map.has_symbol('\u{1fb00}'));
+        assert!(!map.has_symbol('\u{2574}'));
     }
 }
