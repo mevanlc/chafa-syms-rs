@@ -6,6 +6,8 @@
 //! core-parity milestone). Palette-quantized color output for indexed/fgbg
 //! modes is layered on in Phase 6 via [`CanvasMode`] + a palette.
 
+use rayon::prelude::*;
+
 use crate::color::{color_average_2, color_diff, Color, ColorPair, COLOR_PAIR_BG, COLOR_PAIR_FG};
 use crate::geometry::{N_BUF_CELLS, N_CANDIDATES_MAX, SYMBOL_ERROR_MAX, SYMBOL_N_PIXELS};
 use crate::palette::{Palette, PaletteType, INDEX_FG, INDEX_TRANSPARENT};
@@ -585,54 +587,50 @@ pub fn render_cells(
         };
         cols * rows
     ];
-    for row in 0..rows {
-        update_cells_row(
-            cfg,
-            smap,
-            fill_map,
-            pixels,
-            width_pixels,
-            &mut cells,
-            cols,
-            row,
-        );
-    }
+
+    // Rows are independent (wide-lookback stays within a row), so they render in
+    // parallel. Output is identical regardless of thread count (Phase 7).
+    cells
+        .par_chunks_mut(cols.max(1))
+        .enumerate()
+        .for_each(|(row, row_cells)| {
+            update_cells_row(cfg, smap, fill_map, pixels, width_pixels, row_cells, row);
+        });
+
     cells
 }
 
-#[allow(clippy::too_many_arguments)]
 fn update_cells_row(
     cfg: &RenderConfig,
     smap: &SymbolMap,
     fill_map: Option<&SymbolMap>,
     pixels: &[Color],
     width_pixels: usize,
-    cells: &mut [CellOut],
-    cols: usize,
+    row_cells: &mut [CellOut],
     row: usize,
 ) {
+    let cols = row_cells.len();
     // Ring buffer of work cells (for wide lookback) + their errors.
     let mut work_cells: Vec<Option<WorkCell>> = (0..N_BUF_CELLS).map(|_| None).collect();
     let mut cell_errors = [0i32; N_BUF_CELLS];
-    let base = row * cols;
 
     for cx in 0..cols {
         let buf_index = cx % N_BUF_CELLS;
 
-        cells[base + cx] = CellOut {
+        row_cells[cx] = CellOut {
             c: 0x20,
             fg: 0,
             bg: 0,
         };
 
         let mut wcell = WorkCell::init(pixels, width_pixels, cx, row);
-        let mut cell = cells[base + cx];
+        let mut cell = row_cells[cx];
         cell_errors[buf_index] = update_cell(cfg, smap, &mut wcell, &mut cell);
-        cells[base + cx] = cell;
+        row_cells[cx] = cell;
         work_cells[buf_index] = Some(wcell);
 
         // Wide-symbol lookback over (cx-1, cx).
-        if cx >= 1 && cells[base + cx - 1].c != 0 {
+        if cx >= 1 && row_cells[cx - 1].c != 0 {
             let prev_buf = (cx - 1) % N_BUF_CELLS;
             // Take the two work cells out for &mut access.
             let (mut wa, mut wb) = take_two(&mut work_cells, prev_buf, buf_index);
@@ -651,8 +649,8 @@ fn update_cells_row(
                 &mut web,
             );
             if wea + web < cell_errors[prev_buf] + cell_errors[buf_index] {
-                cells[base + cx - 1] = wide_a;
-                cells[base + cx] = wide_b;
+                row_cells[cx - 1] = wide_a;
+                row_cells[cx] = wide_b;
                 cell_errors[prev_buf] = wea;
                 cell_errors[buf_index] = web;
             }
@@ -661,24 +659,24 @@ fn update_cells_row(
         }
 
         // Fill fallback for featureless cells (inert when fill_map is empty/None).
-        let cur = cells[base + cx];
+        let cur = row_cells[cx];
         if cur.c != 0 && (cur.c == 0x20 || cur.c == 0x2588 || cur.fg == cur.bg) {
             let wcell = work_cells[buf_index].as_ref().unwrap();
-            apply_fill(cfg, fill_map, wcell, &mut cells[base + cx]);
+            apply_fill(cfg, fill_map, wcell, &mut row_cells[cx]);
         }
 
         // Blank normalization: still-featureless -> blank_char; ASCII space
         // inherits previous fg to reduce escape churn.
-        let cur = cells[base + cx];
+        let cur = row_cells[cx];
         if cur.c != 0 && (cur.c == 0x20 || cur.fg == cur.bg) {
-            cells[base + cx].c = cfg.blank_char;
+            row_cells[cx].c = cfg.blank_char;
             if cfg.blank_char == 0x20 && cx > 0 {
-                let prev_fg = cells[base + cx - 1].fg;
-                cells[base + cx].fg = prev_fg;
+                let prev_fg = row_cells[cx - 1].fg;
+                row_cells[cx].fg = prev_fg;
                 if cfg.mode == CanvasMode::Truecolor {
-                    cells[base + cx].fg |= 0xff00_0000;
-                } else if cells[base + cx].fg == INDEX_TRANSPARENT as u32 {
-                    cells[base + cx].fg = INDEX_FG as u32;
+                    row_cells[cx].fg |= 0xff00_0000;
+                } else if row_cells[cx].fg == INDEX_TRANSPARENT as u32 {
+                    row_cells[cx].fg = INDEX_FG as u32;
                 }
             }
         }

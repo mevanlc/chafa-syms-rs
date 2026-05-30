@@ -21,3 +21,5 @@ unicode-properties.workspace = true
 # Used only by the differential-oracle test harness to write PNG fixtures that
 # are fed to the patched chafa binary (see tests/support/mod.rs).
 image = { workspace = true }
+# Used by the determinism test to render under scoped thread pools.
+rayon = { workspace = true }
