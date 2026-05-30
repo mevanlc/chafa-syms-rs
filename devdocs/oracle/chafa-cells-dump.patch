@@ -1,5 +1,5 @@
 diff --git a/chafa/chafa-canvas.c b/chafa/chafa-canvas.c
-index 587764c..cc43fec 100644
+index 587764c..29682cc 100644
 --- a/chafa/chafa-canvas.c
 +++ b/chafa/chafa-canvas.c
 @@ -20,6 +20,7 @@
@@ -10,7 +10,7 @@ index 587764c..cc43fec 100644
  #include <string.h>
  #include <glib.h>
  #include "chafa.h"
-@@ -846,6 +847,42 @@ chafa_canvas_build_ansi (ChafaCanvas *canvas)
+@@ -846,6 +847,74 @@ chafa_canvas_build_ansi (ChafaCanvas *canvas)
      return chafa_canvas_print (canvas, NULL);
  }
  
@@ -50,10 +50,42 @@ index 587764c..cc43fec 100644
 +    fclose (df);
 +}
 +
++/* chafa-syms-rs parity oracle: dump the compiled symbol map (narrow + wide
++ * codepoints in prepared order) to the file named by CHAFA_DUMP_SYMMAP. Used
++ * to validate the Rust port's selector/compile/sort against chafa. Run with
++ * CHAFA_SYMS_RS_TIEBREAK set for a deterministic, comparable order. */
++static void
++chafa_syms_rs_dump_symmap (ChafaCanvas *canvas)
++{
++    const gchar *path = g_getenv ("CHAFA_DUMP_SYMMAP");
++    const ChafaSymbolMap *sm;
++    FILE *df;
++    gint i;
++
++    if (!path || canvas->config.pixel_mode != CHAFA_PIXEL_MODE_SYMBOLS)
++        return;
++
++    sm = &canvas->config.symbol_map;
++    df = fopen (path, "w");
++    if (!df)
++        return;
++
++    fprintf (df, "SYMMAP_NARROW %d\n", sm->n_symbols);
++    for (i = 0; i < sm->n_symbols; i++)
++        fprintf (df, "%u %d\n", (unsigned) sm->symbols [i].c, sm->symbols [i].popcount);
++
++    fprintf (df, "SYMMAP_WIDE %d\n", sm->n_symbols2);
++    for (i = 0; i < sm->n_symbols2; i++)
++        fprintf (df, "%u %d %d\n", (unsigned) sm->symbols2 [i].sym [0].c,
++                 sm->symbols2 [i].sym [0].popcount, sm->symbols2 [i].sym [1].popcount);
++
++    fclose (df);
++}
++
  /**
   * chafa_canvas_print:
   * @canvas: The canvas to generate a printable representation of
-@@ -871,6 +908,8 @@ chafa_canvas_print (ChafaCanvas *canvas, ChafaTermInfo *term_info)
+@@ -871,6 +940,8 @@ chafa_canvas_print (ChafaCanvas *canvas, ChafaTermInfo *term_info)
      g_return_val_if_fail (canvas != NULL, NULL);
      g_return_val_if_fail (canvas->refs > 0, NULL);
  
@@ -62,15 +94,69 @@ index 587764c..cc43fec 100644
      if (term_info)
          chafa_term_info_ref (term_info);
      else
-@@ -956,6 +995,8 @@ chafa_canvas_print_rows (ChafaCanvas *canvas, ChafaTermInfo *term_info,
+@@ -956,6 +1027,9 @@ chafa_canvas_print_rows (ChafaCanvas *canvas, ChafaTermInfo *term_info,
      g_return_if_fail (canvas->refs > 0);
      g_return_if_fail (array_out != NULL);
  
 +    chafa_syms_rs_dump_cells (canvas);
++    chafa_syms_rs_dump_symmap (canvas);
 +
      if (term_info)
          chafa_term_info_ref (term_info);
      else
+diff --git a/chafa/chafa-symbol-map.c b/chafa/chafa-symbol-map.c
+index 9f61c7a..ae2b1df 100644
+--- a/chafa/chafa-symbol-map.c
++++ b/chafa/chafa-symbol-map.c
+@@ -353,6 +353,20 @@ glyph_to_bitmap_wide (gint width, gint height,
+                                             CHAFA_SYMBOL_WIDTH_PIXELS * 2);
+ }
+ 
++/* chafa-syms-rs parity: stock chafa breaks equal-popcount ties with an
++ * unstable qsort over GHashTable iteration order, which is platform-dependent
++ * and non-canonical. When CHAFA_SYMS_RS_TIEBREAK is set, break ties by
++ * codepoint (a total order, since codepoints are unique per compiled map) so
++ * the order is fully deterministic and matches the Rust port. */
++static gboolean
++chafa_syms_rs_tiebreak (void)
++{
++    static gint cached = -1;
++    if (cached < 0)
++        cached = g_getenv ("CHAFA_SYMS_RS_TIEBREAK") ? 1 : 0;
++    return cached;
++}
++
+ static gint
+ compare_symbols_popcount (const void *a, const void *b)
+ {
+@@ -363,6 +377,13 @@ compare_symbols_popcount (const void *a, const void *b)
+         return -1;
+     if (a_sym->popcount > b_sym->popcount)
+         return 1;
++    if (chafa_syms_rs_tiebreak ())
++    {
++        if (a_sym->c < b_sym->c)
++            return -1;
++        if (a_sym->c > b_sym->c)
++            return 1;
++    }
+     return 0;
+ }
+ 
+@@ -378,6 +399,13 @@ compare_symbols2_popcount (const void *a, const void *b)
+     if (a_sym->sym [0].popcount + a_sym->sym [1].popcount
+         > b_sym->sym [0].popcount + b_sym->sym [1].popcount)
+         return 1;
++    if (chafa_syms_rs_tiebreak ())
++    {
++        if (a_sym->sym [0].c < b_sym->sym [0].c)
++            return -1;
++        if (a_sym->sym [0].c > b_sym->sym [0].c)
++            return 1;
++    }
+     return 0;
+ }
+ 
 diff --git a/chafa/internal/chafa-symbols.c b/chafa/internal/chafa-symbols.c
 index bebfe2e..df3d014 100644
 --- a/chafa/internal/chafa-symbols.c

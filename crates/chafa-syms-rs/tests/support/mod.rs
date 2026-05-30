@@ -156,6 +156,8 @@ pub fn oracle_render(
         .args(&args)
         .env("CHAFA_DUMP_CELLS", &dump_path)
         .env("DYLD_LIBRARY_PATH", oracle_lib())
+        // Deterministic (popcount, codepoint) symbol order — matches the port.
+        .env("CHAFA_SYMS_RS_TIEBREAK", "1")
         .output()
         .expect("run oracle");
 
@@ -173,6 +175,87 @@ pub fn oracle_render(
     let _ = std::fs::remove_file(&dump_path);
 
     parse_dump(&dump)
+}
+
+/// One symbol-map entry from `CHAFA_DUMP_SYMMAP` (codepoint + popcount).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SymMapEntry {
+    pub c: u32,
+    pub popcount: u32,
+}
+
+/// Capture the compiled symbol map (narrow, wide) for a given mode/flag set,
+/// using the default symbol selectors. Deterministic tiebreak is enabled.
+pub fn oracle_dump_symmap(extra_args: &[&str]) -> (Vec<SymMapEntry>, Vec<SymMapEntry>) {
+    let png_path = unique_tmp("png");
+    let dump_path = unique_tmp("symmap");
+    // 8x8 opaque mid-gray fixture; geometry irrelevant to the symbol map.
+    let buf = vec![0x80u8; 8 * 8 * 4];
+    image::save_buffer(&png_path, &buf, 8, 8, image::ColorType::Rgba8).expect("write fixture");
+
+    let mut args: Vec<String> = vec![
+        "-f".into(),
+        "symbols".into(),
+        "--color-space".into(),
+        "rgb".into(),
+        "-O".into(),
+        "0".into(),
+        "--size".into(),
+        "1x1".into(),
+        "--stretch".into(),
+    ];
+    for a in extra_args {
+        args.push((*a).into());
+    }
+    args.push(png_path.to_string_lossy().into_owned());
+
+    let output = Command::new(oracle_bin())
+        .args(&args)
+        .env("CHAFA_DUMP_SYMMAP", &dump_path)
+        .env("DYLD_LIBRARY_PATH", oracle_lib())
+        .env("CHAFA_SYMS_RS_TIEBREAK", "1")
+        .output()
+        .expect("run oracle");
+    assert!(output.status.success(), "oracle failed for symmap dump");
+
+    let text = std::fs::read_to_string(&dump_path).expect("read symmap dump");
+    let _ = std::fs::remove_file(&png_path);
+    let _ = std::fs::remove_file(&dump_path);
+
+    let mut lines = text.lines();
+    let n: usize = lines
+        .next()
+        .unwrap()
+        .strip_prefix("SYMMAP_NARROW ")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let mut narrow = Vec::with_capacity(n);
+    for _ in 0..n {
+        let l = lines.next().unwrap();
+        let mut p = l.split_whitespace();
+        narrow.push(SymMapEntry {
+            c: p.next().unwrap().parse().unwrap(),
+            popcount: p.next().unwrap().parse().unwrap(),
+        });
+    }
+    let m: usize = lines
+        .next()
+        .unwrap()
+        .strip_prefix("SYMMAP_WIDE ")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let mut wide = Vec::with_capacity(m);
+    for _ in 0..m {
+        let l = lines.next().unwrap();
+        let mut p = l.split_whitespace();
+        wide.push(SymMapEntry {
+            c: p.next().unwrap().parse().unwrap(),
+            popcount: p.next().unwrap().parse().unwrap(),
+        });
+    }
+    (narrow, wide)
 }
 
 /// One narrow symbol from the `CHAFA_DUMP_SYMBOLS` ground-truth dump.

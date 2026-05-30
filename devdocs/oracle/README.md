@@ -59,6 +59,28 @@ WIDE <m>
 ...
 ```
 
+## Deterministic tie-breaking (`CHAFA_SYMS_RS_TIEBREAK`)
+
+Stock chafa orders equal-popcount symbols via an unstable `qsort` over GLib
+hashtable iteration — platform-dependent and non-canonical. That order feeds the
+candidate search, so it can change which symbol a cell picks among
+equally-good ties. Pure Rust cannot replicate glibc-qsort-over-glib-ghash, and
+there is no "true" order to match.
+
+The patch adds a codepoint tiebreaker to both popcount comparators, gated by
+`CHAFA_SYMS_RS_TIEBREAK`. Since codepoints are unique per compiled map,
+`(popcount, codepoint)` is a *total order* → fully deterministic on both sides.
+The Rust port sorts the same way, and the test harness always sets this env var.
+This refines (never violates) chafa's popcount-ascending invariant.
+
+**Gap vs stock chafa (measured, chafa-vs-chafa):** on a worst-case
+320x160 plasma + Gaussian-noise image (800 cells), stock and tiebreak builds
+differ on **23 cells (2.9%)** — all near-featureless gray cells where multiple
+symbols tie on popcount, cutoff-Hamming, and color error, i.e. genuinely
+arbitrary picks. Natural images differ far less. The parity gate is therefore
+*bit-exact vs deterministic chafa*; against stock chafa it differs only on these
+arbitrary ties.
+
 ## Using it from tests
 
 `crates/chafa-syms-rs/tests/support/mod.rs` locates the binary via
