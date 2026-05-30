@@ -127,4 +127,5 @@ The differential tests need the patched chafa oracle built once; see
 
 ## License
 
-MIT OR Apache-2.0.
+LGPL-3.0-only. See [`COPYING`](COPYING), [`COPYING.LESSER`](COPYING.LESSER),
+and [`NOTICE`](NOTICE).
