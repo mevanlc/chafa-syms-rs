@@ -59,6 +59,12 @@ differ on ~3% of cells — all genuinely arbitrary ties. See
   modeled; the underlying resampling math is bit-exact regardless.
 - **Preprocessing:** chafa's `normalize_rgb`/saturation preprocessing (applied
   to 16/8/fgbg modes) is not ported; the library behaves as `--preprocess off`.
+- **Transparent-input handling:** `draw_all_pixels` composites straight alpha
+  over the configured background, whereas chafa carries scaled pixels
+  *premultiplied with alpha retained* into selection. The two agree for opaque
+  input (the validated path); end-to-end parity for partially-transparent
+  imagery is therefore not claimed. The scaler itself is bit-exact including
+  alpha (see `tests/scaler_parity.rs`).
 - **User-imported glyphs:** the selector engine's RTL / zero-width /
   non-printable exclusion branches exist for chafa's user-glyph import, which is
   out of scope here. They are inert for the builtin glyph set (no builtin is
