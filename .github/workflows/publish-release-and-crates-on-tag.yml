@@ -27,7 +27,7 @@ jobs:
         run: |
           CARGO_VERSION=$(
             awk '
-              /^\[package\]$/ { in_section = 1; next }
+              /^\[workspace\.package\]$/ { in_section = 1; next }
               /^\[/ { in_section = 0 }
               in_section && $1 == "version" && $2 == "=" {
                 gsub(/"/, "", $3)
@@ -38,7 +38,7 @@ jobs:
           )
 
           if [ -z "$CARGO_VERSION" ]; then
-            echo "::error::Could not find [package].version in Cargo.toml"
+            echo "::error::Could not find [workspace.package].version in Cargo.toml"
             exit 1
           fi
 
@@ -64,7 +64,7 @@ jobs:
           echo "release_version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
           echo "Resolved release version: $RELEASE_VERSION"
 
-      - name: Stamp crate version
+      - name: Stamp crate versions
         shell: bash
         env:
           RELEASE_VERSION: ${{ steps.resolve-version.outputs.release_version }}
@@ -82,7 +82,7 @@ jobs:
               f'version = "{release_version}"',
               original,
           )
-          expected = 1
+          expected = 2
           if count != expected:
               raise SystemExit(
                   f"Expected exactly {expected} placeholder version entries in Cargo.toml, found {count}"
@@ -102,10 +102,6 @@ jobs:
       - name: Test
         shell: bash
         run: cargo test --workspace --locked
-
-      - name: Test bash conformance
-        shell: bash
-        run: cargo test --workspace --features bash-conformance --locked
 
       - name: Create published release
         id: create_release
@@ -127,7 +123,7 @@ jobs:
             local version="$2"
             local url="https://crates.io/api/v1/crates/${package}/${version}"
             local status
-            status=$(curl -sS -o /dev/null -w "%{http_code}" -A "bash-condexp-publish-ci" "$url" || true)
+            status=$(curl -sS -o /dev/null -w "%{http_code}" -A "chafa-syms-rs-publish-ci" "$url" || true)
             [ "$status" = "200" ]
           }
 
@@ -159,7 +155,8 @@ jobs:
 
           VERSION="$RELEASE_VERSION"
 
-          verify_then_publish bash-condexp "$VERSION"
+          verify_then_publish chafa-syms-rs "$VERSION"
+          verify_then_publish chafa-syms "$VERSION"
 
       - name: Delete release if publish phase fails
         if: failure() && steps.create_release.outcome == 'success'

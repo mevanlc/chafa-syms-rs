@@ -14,7 +14,7 @@ repository = "https://github.com/mevanlc/chafa-syms-rs"
 rust-version = "1.74"
 
 [workspace.dependencies]
-chafa-syms-rs = { path = "crates/chafa-syms-rs" }
+chafa-syms-rs = { version = "0.0.0", path = "crates/chafa-syms-rs" }
 rayon = "1.10"
 bitflags = "2.6"
 unicode-width = "0.2"
