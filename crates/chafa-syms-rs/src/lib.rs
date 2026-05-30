@@ -12,12 +12,14 @@
 pub mod color;
 pub mod geometry;
 pub mod palette;
+pub mod printer;
 pub mod select;
 pub mod symbol;
 pub mod symbol_map;
 pub mod work_cell;
 
 pub use color::{color_diff, Color, ColorPair, COLOR_PAIR_BG, COLOR_PAIR_FG};
+pub use printer::{print_cells, Optimizations};
 pub use select::{render_cells, CanvasMode, CellOut, RenderConfig};
 pub use symbol::{Symbol, SymbolTags, WideSymbol};
 pub use symbol_map::{Candidate, Selector, SymbolMap};

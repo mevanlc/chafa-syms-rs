@@ -74,7 +74,7 @@ fn run_case_work(symbols: &str, fg_only: bool, work: u32) {
     if fg_only {
         args.push("--fg-only");
     }
-    let render = oracle_render_dump(&buf, w, h, cols, rows, &args);
+    let render = oracle_render_dump(&buf, w, h, cols, rows, 0, &args);
     let work_factor = (work as f32 - 1.0) / 8.0;
 
     let mut map = SymbolMap::new();
@@ -167,7 +167,7 @@ fn run_mode(colors_flag: &str, mode: CanvasMode, symbols: &str, fg_only: bool) {
     if fg_only {
         args.push("--fg-only");
     }
-    let render = oracle_render_dump(&buf, w, h, cols, rows, &args);
+    let render = oracle_render_dump(&buf, w, h, cols, rows, 0, &args);
 
     let mut map = SymbolMap::new();
     map.apply_selectors(symbols).unwrap();
@@ -259,7 +259,15 @@ fn wide_lookback_is_exercised() {
     }
     let (cols, rows) = (16u32, 10u32);
     let (buf, w, h) = varied_image(cols, rows);
-    let render = oracle_render_dump(&buf, w, h, cols, rows, &["-c", "full", "--symbols", "all"]);
+    let render = oracle_render_dump(
+        &buf,
+        w,
+        h,
+        cols,
+        rows,
+        0,
+        &["-c", "full", "--symbols", "all"],
+    );
     let wide_cells = render
         .grid
         .cells

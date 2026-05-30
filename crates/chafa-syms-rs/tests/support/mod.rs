@@ -184,33 +184,39 @@ pub struct OracleRender {
     pub height_px: usize,
     pub pixels: Vec<Color>,
     pub grid: OracleGrid,
+    /// The canonical canvas ANSI (rows joined by `\n`, no CLI framing) at the
+    /// requested optimization level.
+    pub ansi: Vec<u8>,
 }
 
-/// Run the oracle capturing both the post-prep pixels (`CHAFA_DUMP_PIXELS`) and
-/// the resulting cells (`CHAFA_DUMP_CELLS`). `extra_args` carries mode/symbol
-/// flags. Deterministic tiebreak enabled.
+/// Run the oracle capturing post-prep pixels (`CHAFA_DUMP_PIXELS`), the cells
+/// (`CHAFA_DUMP_CELLS`) and the canonical ANSI (`CHAFA_DUMP_ANSI`). `opt` is the
+/// `-O` level. `extra_args` carries mode/symbol flags. Tiebreak enabled.
 pub fn oracle_render_dump(
     pixels: &[u8],
     w: u32,
     h: u32,
     cols: u32,
     rows: u32,
+    opt: i32,
     extra_args: &[&str],
 ) -> OracleRender {
     assert_eq!(pixels.len(), (w * h * 4) as usize, "RGBA8 buffer size");
     let png_path = unique_tmp("png");
     let px_path = unique_tmp("px");
     let cells_path = unique_tmp("cells");
+    let ansi_path = unique_tmp("ansi");
     image::save_buffer(&png_path, pixels, w, h, image::ColorType::Rgba8).expect("write PNG");
 
     let size = format!("{cols}x{rows}");
+    let opt_s = opt.to_string();
     let mut args: Vec<String> = vec![
         "-f".into(),
         "symbols".into(),
         "--color-space".into(),
         "rgb".into(),
         "-O".into(),
-        "0".into(),
+        opt_s,
         "--size".into(),
         size,
         "--stretch".into(),
@@ -224,6 +230,7 @@ pub fn oracle_render_dump(
         .args(&args)
         .env("CHAFA_DUMP_PIXELS", &px_path)
         .env("CHAFA_DUMP_CELLS", &cells_path)
+        .env("CHAFA_DUMP_ANSI", &ansi_path)
         .env("DYLD_LIBRARY_PATH", oracle_lib())
         .env("CHAFA_SYMS_RS_TIEBREAK", "1")
         .output()
@@ -236,9 +243,11 @@ pub fn oracle_render_dump(
 
     let px_bytes = std::fs::read(&px_path).expect("read pixel dump");
     let cells = std::fs::read_to_string(&cells_path).expect("read cells dump");
+    let ansi = std::fs::read(&ansi_path).expect("read ansi dump");
     let _ = std::fs::remove_file(&png_path);
     let _ = std::fs::remove_file(&px_path);
     let _ = std::fs::remove_file(&cells_path);
+    let _ = std::fs::remove_file(&ansi_path);
 
     // Pixel dump: "W H\n" header then W*H*4 raw RGBA bytes.
     let nl = px_bytes
@@ -261,6 +270,7 @@ pub fn oracle_render_dump(
         height_px,
         pixels,
         grid: parse_dump(&cells),
+        ansi,
     }
 }
 

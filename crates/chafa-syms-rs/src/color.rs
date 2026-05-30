@@ -64,6 +64,20 @@ impl Color {
         }
     }
 
+    /// Unpack chafa's packed `0xAARRGGBB` color (`chafa_unpack_color`):
+    /// R = bits 16..24, G = 8..16, B = 0..8, A = 24..32.
+    #[inline]
+    pub const fn unpack(packed: u32) -> Self {
+        Color {
+            ch: [
+                ((packed >> 16) & 0xff) as u8,
+                ((packed >> 8) & 0xff) as u8,
+                (packed & 0xff) as u8,
+                ((packed >> 24) & 0xff) as u8,
+            ],
+        }
+    }
+
     /// Inverse of [`Color::from_rgba_u32`] (`chafa_color8_to_u32`).
     #[inline]
     pub const fn to_rgba_u32(self) -> u32 {

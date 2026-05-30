@@ -1,5 +1,5 @@
 diff --git a/chafa/chafa-canvas.c b/chafa/chafa-canvas.c
-index 587764c..29682cc 100644
+index 587764c..f2ff4fd 100644
 --- a/chafa/chafa-canvas.c
 +++ b/chafa/chafa-canvas.c
 @@ -20,6 +20,7 @@
@@ -104,6 +104,35 @@ index 587764c..29682cc 100644
      if (term_info)
          chafa_term_info_ref (term_info);
      else
+@@ -977,6 +1051,28 @@ chafa_canvas_print_rows (ChafaCanvas *canvas, ChafaTermInfo *term_info,
+             *array_len_out = 1;
+     }
+ 
++    /* chafa-syms-rs parity oracle: dump the canonical canvas ANSI (rows joined
++     * by '\n', last row without one — exactly chafa_canvas_print's output, with
++     * no CLI framing) to CHAFA_DUMP_ANSI, for the byte-exact printer gate. */
++    {
++        const gchar *ap = g_getenv ("CHAFA_DUMP_ANSI");
++        if (ap && *array_out)
++        {
++            FILE *af = fopen (ap, "wb");
++            if (af)
++            {
++                gint k;
++                for (k = 0; (*array_out) [k] != NULL; k++)
++                {
++                    if (k > 0)
++                        fputc ('\n', af);
++                    fwrite ((*array_out) [k]->str, 1, (*array_out) [k]->len, af);
++                }
++                fclose (af);
++            }
++        }
++    }
++
+     chafa_term_info_unref (term_info);
+ }
+ 
 diff --git a/chafa/chafa-symbol-map.c b/chafa/chafa-symbol-map.c
 index 9f61c7a..ae2b1df 100644
 --- a/chafa/chafa-symbol-map.c

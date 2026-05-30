@@ -64,6 +64,9 @@ pub struct RenderConfig {
     pub use_quantized_error: bool,
     pub blank_char: u32,
     pub solid_char: u32,
+    /// Alpha threshold (chafa default 127): pixels with alpha below this are
+    /// treated as transparent.
+    pub alpha_threshold: u8,
     /// fg/bg palettes (`None` in truecolor). For Indexed16_8, `fg` is Fixed16
     /// and `bg` is Fixed8; otherwise both share the mode's palette type.
     pub fg_palette: Option<Palette>,
@@ -149,6 +152,7 @@ impl RenderConfig {
             use_quantized_error,
             blank_char,
             solid_char,
+            alpha_threshold: ALPHA_THRESHOLD,
             fg_palette,
             bg_palette,
         }
