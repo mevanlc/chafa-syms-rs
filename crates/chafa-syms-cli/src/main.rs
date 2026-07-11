@@ -7,7 +7,7 @@
 
 use std::process::ExitCode;
 
-use chafa_syms_rs::canvas::{Canvas, CanvasConfig};
+use chafa_syms_rs::canvas::{Canvas, CanvasConfig, StippleMode};
 use chafa_syms_rs::printer::Optimizations;
 use chafa_syms_rs::select::CanvasMode;
 use chafa_syms_rs::{PixelType, SymbolMap};
@@ -63,6 +63,14 @@ struct Args {
     #[arg(long)]
     invert: bool,
 
+    /// Image preprocessing: on/off. Defaults to on, matching chafa.
+    #[arg(short = 'p', long, default_value = "on")]
+    preprocess: String,
+
+    /// Stipple post-processing mode: off, grayscale-fill.
+    #[arg(long, default_value = "off")]
+    stipple_mode: String,
+
     /// Font width/height ratio for aspect correction (default 0.5).
     #[arg(long, default_value_t = 0.5)]
     font_ratio: f32,
@@ -97,6 +105,8 @@ fn run(args: &Args) -> Result<(), String> {
 
     let mode = parse_mode(&args.colors)?;
     let (mut fg, mut bg) = (parse_color(&args.fg)?, parse_color(&args.bg)?);
+    let preprocess = parse_bool(&args.preprocess, "--preprocess")?;
+    let stipple_mode = parse_stipple_mode(&args.stipple_mode)?;
     if args.invert {
         std::mem::swap(&mut fg, &mut bg);
     }
@@ -136,6 +146,8 @@ fn run(args: &Args) -> Result<(), String> {
         .bg_color(bg)
         .work_factor((args.work.clamp(1, 9) as f32 - 1.0) / 8.0)
         .fg_only(args.fg_only)
+        .preprocessing(preprocess)
+        .stipple_mode(stipple_mode)
         .optimizations(optimizations(args.optimize))
         .symbol_map(symbol_map);
 
@@ -177,6 +189,24 @@ fn parse_mode(s: &str) -> Result<CanvasMode, String> {
         "full" | "truecolor" | "tc" => CanvasMode::Truecolor,
         _ => return Err(format!("unknown color mode '{s}'")),
     })
+}
+
+fn parse_bool(s: &str, name: &str) -> Result<bool, String> {
+    match s.to_ascii_lowercase().as_str() {
+        "on" | "yes" | "true" | "1" => Ok(true),
+        "off" | "no" | "false" | "0" => Ok(false),
+        _ => Err(format!("{name} must be on or off")),
+    }
+}
+
+fn parse_stipple_mode(s: &str) -> Result<StippleMode, String> {
+    match s.to_ascii_lowercase().as_str() {
+        "off" | "none" => Ok(StippleMode::Off),
+        "grayscale-fill" | "grayscale" | "gray-fill" | "grey-fill" => {
+            Ok(StippleMode::GrayscaleFill)
+        }
+        _ => Err(format!("unknown --stipple-mode '{s}'")),
+    }
 }
 
 fn optimizations(level: u32) -> Optimizations {
@@ -241,11 +271,11 @@ fn geometry(args: &Args, iw: usize, ih: usize, max_cols: usize, max_rows: usize)
             match (c, r) {
                 (Some(c), Some(r)) => return (c.max(1), r.max(1)),
                 (Some(c), None) => {
-                    let rows = ((c as f32) * (ih as f32) / (iw as f32) * fr).round() as usize;
+                    let rows = ((c as f32) * (ih as f32) / (iw as f32) * fr).ceil() as usize;
                     return (c.max(1), rows.max(1));
                 }
                 (None, Some(r)) => {
-                    let cols = ((r as f32) * (iw as f32) / (ih as f32) / fr).round() as usize;
+                    let cols = ((r as f32) * (iw as f32) / (ih as f32) / fr).ceil() as usize;
                     return (cols.max(1), r.max(1));
                 }
                 (None, None) => {}
@@ -258,8 +288,8 @@ fn geometry(args: &Args, iw: usize, ih: usize, max_cols: usize, max_rows: usize)
         if scale != "max" {
             if let Ok(n) = scale.parse::<f32>() {
                 if n > 0.0 {
-                    let cols = ((iw as f32 / 8.0) * n).round() as usize;
-                    let rows = ((ih as f32 / 8.0) * n * fr).round() as usize;
+                    let cols = ((iw as f32 / 8.0) * n).ceil() as usize;
+                    let rows = ((ih as f32 / 8.0) * n * fr).ceil() as usize;
                     return (cols.clamp(1, max_cols), rows.clamp(1, max_rows));
                 }
             }
@@ -280,8 +310,8 @@ fn fit_aspect(iw: usize, ih: usize, max_cols: usize, max_rows: usize, fr: f32) -
         cols = rows * img_aspect / fr;
     }
     (
-        (cols.round() as usize).clamp(1, max_cols),
-        (rows.round() as usize).clamp(1, max_rows),
+        (cols.ceil() as usize).clamp(1, max_cols),
+        (rows.ceil() as usize).clamp(1, max_rows),
     )
 }
 
@@ -316,5 +346,19 @@ mod tests {
 
         assert!(map.has_symbol('\u{1fb00}'));
         assert!(!map.has_symbol('\u{2574}'));
+    }
+
+    #[test]
+    fn fit_aspect_uses_chafa_ceil_geometry() {
+        assert_eq!(fit_aspect(1952, 2158, 80, 24, 0.5), (44, 24));
+    }
+
+    #[test]
+    fn parse_stipple_mode_aliases() {
+        assert_eq!(parse_stipple_mode("off").unwrap(), StippleMode::Off);
+        assert_eq!(
+            parse_stipple_mode("grayscale-fill").unwrap(),
+            StippleMode::GrayscaleFill
+        );
     }
 }

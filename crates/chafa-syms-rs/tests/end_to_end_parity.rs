@@ -39,10 +39,6 @@ fn run(colors_flag: &str, mode: CanvasMode, symbols: &str) {
     let (cols, rows) = (24u32, 14u32);
     let (buf, w, h) = varied_image(cols, rows);
     // -O 5 -> REUSE_ATTRIBUTES (REPEAT is inert with the fallback term).
-    // -p off: chafa's preprocessing (normalize_rgb for FIXED_16/8/FGBG) is not
-    // ported (an enhancement, not the core); disable it so this gate isolates
-    // the pipeline we implement. Bit-exact end-to-end parity then holds for all
-    // modes; with preprocessing on, only truecolor/256/240 match (no normalize).
     let render = oracle_render_dump(
         &buf,
         w,
@@ -58,6 +54,7 @@ fn run(colors_flag: &str, mode: CanvasMode, symbols: &str) {
     let cfg = CanvasConfig::new(cols as usize, rows as usize)
         .mode(mode)
         .work_factor(0.5)
+        .preprocessing(false)
         .optimizations(Optimizations::REUSE_ATTRIBUTES)
         .symbol_map(map);
     let mut canvas = Canvas::new(cfg);
@@ -100,4 +97,46 @@ fn e2e_indexed_16() {
 #[test]
 fn e2e_fgbg() {
     run("none", CanvasMode::Fgbg, "block,border,space-wide");
+}
+
+#[test]
+fn e2e_fgbg_preprocessing() {
+    if !oracle_available() {
+        eprintln!("SKIP: oracle binary not found");
+        return;
+    }
+    let (cols, rows) = (24u32, 14u32);
+    let (buf, w, h) = varied_image(cols, rows);
+    let symbols = "half,stipple";
+    let render = oracle_render_dump(
+        &buf,
+        w,
+        h,
+        cols,
+        rows,
+        5,
+        &["-c", "none", "--symbols", symbols, "-p", "on"],
+    );
+
+    let mut map = SymbolMap::new();
+    map.apply_selectors(symbols).unwrap();
+    let cfg = CanvasConfig::new(cols as usize, rows as usize)
+        .mode(CanvasMode::Fgbg)
+        .work_factor(0.5)
+        .optimizations(Optimizations::REUSE_ATTRIBUTES)
+        .symbol_map(map);
+    let mut canvas = Canvas::new(cfg);
+    canvas.draw_all_pixels(
+        PixelType::Rgba8,
+        &buf,
+        w as usize,
+        h as usize,
+        w as usize * 4,
+    );
+
+    assert_eq!(
+        canvas.print().as_bytes(),
+        render.ansi.as_slice(),
+        "[none {symbols} preprocess] end-to-end ANSI differs from chafa"
+    );
 }

@@ -62,6 +62,7 @@ fn run(w: u32, h: u32, cols: u32, rows: u32, colors_flag: &str, mode: CanvasMode
     let cfg = CanvasConfig::new(cols as usize, rows as usize)
         .mode(mode)
         .work_factor(0.5)
+        .preprocessing(false)
         .optimizations(Optimizations::REUSE_ATTRIBUTES)
         .symbol_map(map);
     let mut canvas = Canvas::new(cfg);
@@ -202,6 +203,7 @@ fn run_alpha(
     let cfg = CanvasConfig::new(cols as usize, rows as usize)
         .mode(mode)
         .work_factor(0.5)
+        .preprocessing(false)
         .optimizations(Optimizations::REUSE_ATTRIBUTES)
         .symbol_map(map);
     let mut canvas = Canvas::new(cfg);
