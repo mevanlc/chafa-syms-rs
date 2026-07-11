@@ -5,7 +5,7 @@
 //! `--size --scale --colors --fg --bg --work --threads --symbols --fg-only
 //! --invert --font-ratio --optimize --format`.
 
-use std::process::ExitCode;
+use std::{ffi::OsString, process::ExitCode};
 
 use chafa_syms_rs::canvas::{Canvas, CanvasConfig, StippleMode};
 use chafa_syms_rs::printer::Optimizations;
@@ -51,8 +51,8 @@ struct Args {
     #[arg(long, default_value_t = -1)]
     threads: i32,
 
-    /// Symbol selector string (e.g. `block+border`, `ascii`, `all`).
-    #[arg(long)]
+    /// Symbol selector string (e.g. `block+border`, `ascii`, `all`), or `help`.
+    #[arg(long, value_name = "SPEC")]
     symbols: Option<String>,
 
     /// Use foreground colors only (transparent background).
@@ -85,13 +85,38 @@ struct Args {
 }
 
 fn main() -> ExitCode {
-    let args = Args::parse();
+    let args = parse_args();
+    if args.symbols.as_deref() == Some("help") {
+        print!("{SYMBOLS_HELP}");
+        return ExitCode::SUCCESS;
+    }
     match run(&args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("chafa-syms: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+fn parse_args() -> Args {
+    let raw_args: Vec<OsString> = std::env::args_os().collect();
+    let symbols_help_requested = raw_args.iter().any(|arg| arg == "--symbols=help")
+        || raw_args
+            .windows(2)
+            .any(|args| args[0] == "--symbols" && args[1] == "help");
+
+    match Args::try_parse_from(raw_args.clone()) {
+        Ok(args) => args,
+        Err(error)
+            if symbols_help_requested
+                && error.kind() == clap::error::ErrorKind::MissingRequiredArgument =>
+        {
+            let mut args_with_placeholder = raw_args;
+            args_with_placeholder.push(OsString::new());
+            Args::parse_from(args_with_placeholder)
+        }
+        Err(error) => error.exit(),
     }
 }
 
@@ -158,6 +183,92 @@ fn run(args: &Args) -> Result<(), String> {
     print!("\x1b[?25l{}\n\x1b[?25h", canvas.print());
     Ok(())
 }
+
+const SYMBOLS_HELP: &str = r#"NAME
+    chafa-syms --symbols - select the characters used for symbol rendering
+
+SYNOPSIS
+    chafa-syms --symbols SPEC IMAGE
+    chafa-syms --symbols help
+
+DESCRIPTION
+    SPEC is an ordered list of symbol selectors. If its first selector has no
+    initial '+' or '-', it replaces the default symbol map. An initial '+' or
+    '-' modifies the default map instead. Selectors are applied from left to
+    right: '+' adds matching symbols and '-' removes them.
+
+GRAMMAR
+    SPEC      := [OP] ITEM { [SEPARATOR] [OP] ITEM }
+    OP        := '+' | '-'
+    SEPARATOR := comma or space
+    ITEM      := NAME | CODEPOINT | RANGE | SET
+    CODEPOINT := hexadecimal code point: 2580, u2580, or 0x2580
+    RANGE     := CODEPOINT '..' CODEPOINT
+    SET       := '[' literal characters ']'
+
+    Within a SET, backslash escapes the next character, so '\]' selects a
+    closing bracket and '\\' selects a backslash. An OP remains in effect until
+    another OP changes it; commas and spaces only separate items. Named sets
+    are case-insensitive.
+
+NAMED SYMBOL SETS
+    all         All normal symbols; excludes extra, ambiguous, and ugly sets.
+    none        No symbols (useful as the base/replacement set).
+    space       The space character.
+    solid       The solid cell character (the inverse of space).
+    stipple     Stipple and shade symbols.
+    block       Block-element symbols.
+    border      Border and box-drawing symbols.
+    diagonal    Diagonal border symbols.
+    dot         Isolated dot symbols, excluding Braille.
+    quad        Quadrant block symbols (2x2 mosaics).
+    half        Horizontal and vertical half-block symbols.
+    hhalf       Horizontal half-block symbols (upper and lower halves).
+    vhalf       Vertical half-block symbols (left and right halves).
+    inverted    Symbols that are inverses of simpler symbols.
+    braille     Braille symbols (2x4 dot mosaics).
+    sextant     Sextant symbols (2x3 mosaics).
+    octant      Octant symbols (2x4 mosaics).
+    wedge       Wedge shapes that align with sextants.
+    technical   Miscellaneous technical symbols.
+    geometric   Geometric shapes.
+    ascii       Printable ASCII characters.
+    alpha       Letters.
+    digit       Digits.
+    alnum       Letters and digits (the union of alpha and digit).
+    narrow      Characters that are one terminal cell wide.
+    wide        Characters that are two terminal cells wide.
+    ambiguous   Characters of uncertain width; otherwise excluded
+                automatically.
+    ugly        Characters unlikely to render well; otherwise excluded
+                automatically.
+    bad         The union of ambiguous and ugly.
+    legacy      Legacy computing symbols, including sextants and wedges.
+    latin       Latin and Latin-like symbols (a superset of ASCII).
+    import      User-imported glyphs (none are available in this build).
+    imported    Alias for import.
+    extra       Symbols not in another category; excluded from all.
+
+DEFAULT
+    The default is block+border+space-wide. In color modes other than 'none'
+    and '2', inverted symbols are also removed.
+
+EXAMPLES
+    --symbols ascii
+        Replace the default with printable ASCII characters.
+
+    --symbols block+border-solid
+        Use block and border symbols, excluding the solid cell.
+
+    --symbols +braille-dot
+        Add Braille symbols to the default and remove isolated dots.
+
+    --symbols u2580..u259f
+        Use Unicode Block Elements by code point range.
+
+    --symbols '[ .oO@]'
+        Use exactly the five literal characters between the brackets.
+"#;
 
 /// chafa's CLI default symbol set: block+border+space-wide, minus `inverted`
 /// for non-FGBG modes (`chicle-options.c`).

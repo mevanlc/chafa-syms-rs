@@ -25,6 +25,7 @@ chafa-syms --colors 256 image.jpg
 chafa-syms --colors none --symbols ascii image.png
 chafa-syms --fg-only --symbols all image.webp
 chafa-syms --fg cyan --bg black --invert image.bmp
+chafa-syms --symbols help
 ```
 
 Supported input formats are the formats enabled in this package's `image`
@@ -102,6 +103,9 @@ chafa-syms --symbols '+sextant' image.png
 The selector syntax follows chafa-style symbol selectors, including tags,
 ranges, codepoints, and bracketed character sets.
 
+Run `chafa-syms --symbols help` without an image argument for a man-page-style
+description of the selector grammar, examples, and every named symbol set.
+
 ## Options
 
 ```text
@@ -112,7 +116,7 @@ ranges, codepoints, and bracketed character sets.
 --bg COLOR        Background color, default black
 -w, --work 1-9    Quality/work factor, default 5
 --threads N       Worker threads, -1 for auto
---symbols SPEC    Symbol selector string
+--symbols SPEC    Symbol selector string; use `help` for selector documentation
 --fg-only         Use foreground colors only
 --invert          Swap foreground and background colors
 --font-ratio N    Font width/height ratio, default 0.5

@@ -90,6 +90,7 @@ chafa-syms image.png                       # fit to terminal, truecolor
 chafa-syms --size 80x24 -c 256 image.png   # 256-color, fixed size
 chafa-syms --symbols ascii -c none in.png  # old-school ASCII art
 chafa-syms --fg-only --symbols all pic.png
+chafa-syms --symbols help                  # selector grammar and named sets
 ```
 
 Flags: `--size --scale --colors --fg --bg --work --threads --symbols
