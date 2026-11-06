@@ -3,11 +3,12 @@
 //!
 //! Builder-style configuration (idiomatic Rust) over chafa-tracking semantics.
 //! Geometry is in **cells**; the pixel grid is `width*8 × height*8`. Input is
-//! resampled to that grid (best-effort, see [`crate::pixops`]); pass a
-//! pre-sized buffer for bit-exact selection.
+//! resampled to that grid with the scalar [`crate::smolscale`] port.
 
 use crate::color::Color;
-use crate::geometry::{SYMBOL_HEIGHT_PIXELS, SYMBOL_WIDTH_PIXELS};
+use crate::geometry::{
+    pixel_count, IMAGE_DIMENSION_MAX, SYMBOL_HEIGHT_PIXELS, SYMBOL_WIDTH_PIXELS,
+};
 use crate::pixops::{self, PixelType};
 use crate::printer::{print_cells, Optimizations};
 use crate::select::{render_cells, CanvasMode, CellOut, RenderConfig};
@@ -118,7 +119,21 @@ pub struct Canvas {
 impl Canvas {
     /// Create a canvas, compiling the symbol map and resolving the render
     /// configuration (mode gates, palettes, blank/solid chars).
+    ///
+    /// # Panics
+    ///
+    /// Panics if either cell dimension is zero or exceeds 8191 (the scaler's
+    /// 65535-pixel limit divided by eight), or buffer arithmetic overflows.
     pub fn new(mut cfg: CanvasConfig) -> Self {
+        assert!(
+            (1..=IMAGE_DIMENSION_MAX / SYMBOL_WIDTH_PIXELS).contains(&cfg.width)
+                && (1..=IMAGE_DIMENSION_MAX / SYMBOL_HEIGHT_PIXELS).contains(&cfg.height),
+            "canvas dimensions must be in 1..=8191 cells"
+        );
+        pixel_count(
+            cfg.width * SYMBOL_WIDTH_PIXELS,
+            cfg.height * SYMBOL_HEIGHT_PIXELS,
+        );
         cfg.symbol_map.prepare();
         let render_cfg = RenderConfig::new(
             cfg.mode,
@@ -153,8 +168,8 @@ impl Canvas {
 
     /// Draw raw pixels onto the canvas: convert format → resample to the cell
     /// grid (a bit-exact port of chafa's smolscale, gamma-correct in
-    /// premultiplied linear light) → composite alpha over the background → run
-    /// the selection core.
+    /// premultiplied linear light) and composite over the background →
+    /// preprocess → run the selection core. Low work factors use nearest sampling.
     ///
     /// The resample is a pure stretch to `width*8 × height*8`, matching chafa
     /// run with `--stretch`. Placement/tuck/align (chafa's CLI default
@@ -172,15 +187,20 @@ impl Canvas {
         let src = pixops::to_rgba(ptype, data, w, h, rowstride);
         let src_bytes: Vec<u8> = src.iter().flat_map(|c| c.ch).collect();
         let (dw, dh) = (self.width_pixels(), self.height_pixels());
-        let scaled = smolscale::scale_rgba8(&src_bytes, w, h, dw, dh);
+        let scaled = smolscale::scale_rgba8_with_background(
+            &src_bytes,
+            w,
+            h,
+            dw,
+            dh,
+            self.cfg.bg_rgb,
+            self.render_cfg.work_factor_int < 3,
+        );
         let mut grid: Vec<Color> = scaled
             .chunks_exact(4)
             .map(|p| Color::new(p[0], p[1], p[2], p[3]))
             .collect();
         preprocess_for_symbols(&mut grid, self.cfg.mode, self.cfg.preprocessing_enabled);
-        if pixops::has_alpha(&grid) {
-            composite_grid(&mut grid, self.cfg.bg_rgb);
-        }
         self.cells = render_cells(&self.render_cfg, &self.cfg.symbol_map, None, &grid, dw, dh);
         apply_stipple_mode(
             self.cfg.stipple_mode,
@@ -191,8 +211,8 @@ impl Canvas {
         );
     }
 
-    /// Draw a pre-sized RGBA grid (`width*8 × height*8`) directly — no
-    /// resampling, so selection is bit-exact for the given pixels.
+    /// Draw a pre-sized RGBA grid (`width*8 × height*8`) without resizing.
+    /// Background compositing and preprocessing are still applied.
     pub fn draw_rgba_presized(&mut self, grid: &[Color]) {
         let (dw, dh) = (self.width_pixels(), self.height_pixels());
         assert_eq!(
@@ -200,19 +220,8 @@ impl Canvas {
             dw * dh,
             "pre-sized grid must be width*8 x height*8"
         );
-        let mut grid = grid.to_vec();
-        preprocess_for_symbols(&mut grid, self.cfg.mode, self.cfg.preprocessing_enabled);
-        if pixops::has_alpha(&grid) {
-            composite_grid(&mut grid, self.cfg.bg_rgb);
-        }
-        self.cells = render_cells(&self.render_cfg, &self.cfg.symbol_map, None, &grid, dw, dh);
-        apply_stipple_mode(
-            self.cfg.stipple_mode,
-            &self.render_cfg,
-            &grid,
-            dw,
-            &mut self.cells,
-        );
+        let bytes: Vec<u8> = grid.iter().flat_map(|p| p.ch).collect();
+        self.draw_all_pixels(PixelType::Rgba8, &bytes, dw, dh, dw * 4);
     }
 
     /// The rendered cells.
@@ -231,12 +240,6 @@ impl Canvas {
             self.cfg.optimizations,
         )
     }
-}
-
-fn composite_grid(grid: &mut [Color], bg_rgb: u32) {
-    let mut bg = Color::from_rgb_u32(bg_rgb);
-    bg.ch[3] = 0xff;
-    pixops::composite_over_bg(grid, bg);
 }
 
 fn apply_stipple_mode(

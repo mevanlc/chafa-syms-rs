@@ -9,6 +9,22 @@ pub const SYMBOL_HEIGHT_PIXELS: usize = 8;
 /// Pixels per symbol cell = 64, i.e. one `u64` bitmap (`chafa-private.h:40`).
 pub const SYMBOL_N_PIXELS: usize = SYMBOL_WIDTH_PIXELS * SYMBOL_HEIGHT_PIXELS;
 
+/// Largest source or destination pixel dimension accepted by smolscale.
+pub const IMAGE_DIMENSION_MAX: usize = 65_535;
+
+pub(crate) fn pixel_count(width: usize, height: usize) -> usize {
+    assert!(
+        (1..=IMAGE_DIMENSION_MAX).contains(&width) && (1..=IMAGE_DIMENSION_MAX).contains(&height),
+        "pixel dimensions must be in 1..=65535"
+    );
+    let count = width.checked_mul(height).expect("pixel count overflow");
+    assert!(
+        count <= isize::MAX as usize / 4,
+        "pixel buffer size overflow"
+    );
+    count
+}
+
 /// Maximum number of shape candidates carried into Phase B
 /// (`chafa-symbol-renderer.c:41`).
 pub const N_CANDIDATES_MAX: usize = 8;

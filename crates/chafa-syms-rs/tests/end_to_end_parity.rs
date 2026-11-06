@@ -2,9 +2,8 @@
 //! -> identity scale -> composite -> selection -> printer) must reproduce
 //! chafa's full canonical ANSI byte-for-byte, for pre-sized opaque inputs.
 //!
-//! Using a `cols*8 x rows*8` input makes the scaler an identity copy on both
-//! sides (chafa via `--stretch`, us via the equal-size fast path), so this
-//! exercises the whole pipeline *except* resampling (best-effort, D2).
+//! Using a `cols*8 x rows*8` input leaves dimensions unchanged on both sides;
+//! real resizing is covered separately in `scaling_e2e_parity.rs`.
 
 mod support;
 

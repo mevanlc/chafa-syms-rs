@@ -1,11 +1,9 @@
 //! Symbol map: selector grammar, selection (`char_is_selected`), compilation
 //! (dedup + popcount sort + packed bitmaps), and candidate search.
 //!
-//! Port of `chafa-symbol-map.c`. One deliberate, documented divergence: equal
-//! popcount ties in the compiled sort are broken by **codepoint** (a total
-//! order), making the symbol array fully deterministic. Stock chafa leaves this
-//! order to an unstable `qsort` over GLib hashtable iteration; the oracle is
-//! patched to match (env `CHAFA_SYMS_RS_TIEBREAK`). See `devdocs/oracle`.
+//! Port of `chafa-symbol-map.c`. Equal-popcount ties are broken by codepoint,
+//! matching upstream's deterministic total order. See `devdocs/oracle` for
+//! the pinned reference snapshot.
 
 use std::collections::HashMap;
 

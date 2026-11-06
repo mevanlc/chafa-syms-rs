@@ -4,7 +4,7 @@
 //!
 //! Unlike `end_to_end_parity.rs` (which pre-sizes the input so the scaler is an
 //! identity copy), this exercises chafa's **smolscale** resampler via the real
-//! canvas pipeline (`smol_scale_new_full` + `SRC_CLEAR_DEST`, full placement),
+//! canvas pipeline (`smol_scale_new_full` + `SRC_OVER_COLOR_SRC_ALPHA`, full placement),
 //! confirming the port matches it end-to-end. We use high-contrast imagery
 //! downscaled hard — the regime where gamma-correct linear-light averaging
 //! diverges most from naive sRGB resampling — and a separate set of
@@ -15,7 +15,6 @@ mod support;
 
 use chafa_syms_rs::canvas::{Canvas, CanvasConfig};
 use chafa_syms_rs::color::Color;
-use chafa_syms_rs::pixops;
 use chafa_syms_rs::printer::Optimizations;
 use chafa_syms_rs::select::CanvasMode;
 use chafa_syms_rs::smolscale;
@@ -184,14 +183,12 @@ fn run_alpha(
     // Reproduce the canvas grid (scale → composite over black, alpha retained)
     // and compare to chafa's post-prep ChafaPixel dump.
     let (dw, dh) = ((cols * 8) as usize, (rows * 8) as usize);
-    let scaled = smolscale::scale_rgba8(&buf, w as usize, h as usize, dw, dh);
-    let mut grid: Vec<Color> = scaled
+    let scaled =
+        smolscale::scale_rgba8_with_background(&buf, w as usize, h as usize, dw, dh, 0, false);
+    let grid: Vec<Color> = scaled
         .chunks_exact(4)
         .map(|p| Color::new(p[0], p[1], p[2], p[3]))
         .collect();
-    if pixops::has_alpha(&grid) {
-        pixops::composite_over_bg(&mut grid, Color::new(0, 0, 0, 0xff));
-    }
     assert_eq!(
         grid, render.pixels,
         "[{w}x{h}->{cols}x{rows}] composited grid differs from chafa post-prep pixels"
@@ -302,4 +299,88 @@ fn scale_alpha_downscale_fgbg() {
         CanvasMode::Fgbg,
         "block,border,space-wide",
     );
+}
+
+#[test]
+fn scaled_background_and_low_work_match_chafa() {
+    if !oracle_available() {
+        eprintln!("SKIP: oracle binary not found");
+        return;
+    }
+    let (w, h, cols, rows) = (53, 31, 5, 3);
+    let buf = alpha_image(w, h);
+    for (colors, mode) in [
+        ("full", CanvasMode::Truecolor),
+        ("256", CanvasMode::Indexed256),
+        ("16", CanvasMode::Indexed16),
+        ("none", CanvasMode::Fgbg),
+    ] {
+        for work in [1, 3, 5] {
+            for bg in [0, 0x2957a3] {
+                for preprocess in [false, true] {
+                    let bg_arg = format!("#{bg:06x}");
+                    let work_arg = work.to_string();
+                    let render = oracle_render_dump(
+                        &buf,
+                        w,
+                        h,
+                        cols,
+                        rows,
+                        5,
+                        &[
+                            "-c",
+                            colors,
+                            "--symbols",
+                            "all",
+                            "--bg",
+                            &bg_arg,
+                            "--work",
+                            &work_arg,
+                            "-p",
+                            if preprocess { "on" } else { "off" },
+                        ],
+                    );
+                    let mut map = SymbolMap::new();
+                    map.apply_selectors("all").unwrap();
+                    let cfg = CanvasConfig::new(cols as usize, rows as usize)
+                        .mode(mode)
+                        .bg_color(bg)
+                        .work_factor((work as f32 - 1.0) / 8.0)
+                        .preprocessing(preprocess)
+                        .optimizations(Optimizations::REUSE_ATTRIBUTES)
+                        .symbol_map(map);
+                    let mut canvas = Canvas::new(cfg);
+                    canvas.draw_all_pixels(
+                        PixelType::Rgba8,
+                        &buf,
+                        w as usize,
+                        h as usize,
+                        w as usize * 4,
+                    );
+                    let label = format!("{colors} work={work} bg={bg_arg} preprocess={preprocess}");
+                    assert_eq!(canvas.print().as_bytes(), render.ansi, "{label}");
+                    for (cell, reference) in canvas.cells().iter().zip(&render.grid.cells) {
+                        assert_eq!(
+                            (cell.c, cell.fg, cell.bg),
+                            (reference.codepoint, reference.fg_raw, reference.bg_raw),
+                            "{label}"
+                        );
+                    }
+                    if !preprocess {
+                        let grid = smolscale::scale_rgba8_with_background(
+                            &buf,
+                            w as usize,
+                            h as usize,
+                            cols as usize * 8,
+                            rows as usize * 8,
+                            bg,
+                            work == 1,
+                        );
+                        let expected: Vec<u8> = render.pixels.iter().flat_map(|p| p.ch).collect();
+                        assert_eq!(grid, expected, "prepared pixels: {label}");
+                    }
+                }
+            }
+        }
+    }
 }

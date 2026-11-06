@@ -25,11 +25,14 @@ chafa-syms --colors 256 image.jpg
 chafa-syms --colors none --symbols ascii image.png
 chafa-syms --fg-only --symbols all image.webp
 chafa-syms --fg cyan --bg black --invert image.bmp
+chafa-syms -c 16 --preprocess off image.png
+chafa-syms -c none --stipple-mode grayscale-fill image.png
 chafa-syms --symbols help
 ```
 
 Supported input formats are the formats enabled in this package's `image`
 dependency: PNG, JPEG, GIF, BMP, and WebP.
+The command renders a still image; it does not play GIF/APNG animations.
 
 ## Size
 
@@ -55,6 +58,11 @@ chafa-syms --scale max image.png
 ```
 
 `--size` takes precedence over `--scale`.
+Output dimensions must be in `1..=8191` cells per side. Malformed, zero,
+overflowing, and oversized dimensions produce an error. Scale factors and
+font ratios must be positive and finite. Source images are limited to 65535
+pixels per side and 256Mpx in total, with the image decoder's allocation limit
+also enforced.
 
 ## Colors
 
@@ -115,10 +123,12 @@ description of the selector grammar, examples, and every named symbol set.
 --fg COLOR        Foreground color, default white
 --bg COLOR        Background color, default black
 -w, --work 1-9    Quality/work factor, default 5
---threads N       Worker threads, -1 for auto
+--threads N       Worker threads, any negative value for auto
 --symbols SPEC    Symbol selector string; use `help` for selector documentation
 --fg-only         Use foreground colors only
 --invert          Swap foreground and background colors
+-p, --preprocess BOOL  Saturation/normalization preprocessing, default on
+--stipple-mode MODE    off (default) or grayscale-fill
 --font-ratio N    Font width/height ratio, default 0.5
 -O, --optimize N  Output optimization level, default 5
 -f, --format FMT  Output format; only symbols is supported
@@ -135,8 +145,14 @@ Implemented:
 - terminal-cell sizing and aspect correction
 - truecolor and indexed terminal color modes
 - foreground-only rendering
+- optional saturation/normalization preprocessing and grayscale stipple fill
 - chafa-style symbol selectors
 - ANSI/UTF-8 symbol output
+
+The symbol pipeline tracks chafa upstream `c897fce`: deterministic symbol
+ordering, corrected fixed-palette lookup, revised scaling/alpha arithmetic,
+linear-light background compositing, and nearest-neighbor sampling at low
+work factors. Image decoding remains provided by Rust's `image` crate.
 
 Not implemented:
 

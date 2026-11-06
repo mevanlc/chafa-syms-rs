@@ -6,18 +6,19 @@
 //! ## Scope
 //!
 //! Only the single format path chafa uses is ported:
-//! `RGBA8_UNASSOCIATED → RGBA8_UNASSOCIATED`, `SMOL_NO_FLAGS`. With sRGB
+//! `RGBA8_UNASSOCIATED → RGBA8_UNASSOCIATED`. With sRGB
 //! linearization enabled (the default), this forces **128bpp** storage,
-//! **PREMUL16** alpha and **SRGB_LINEAR** gamma. Scaling therefore happens in
-//! gamma-correct, alpha-premultiplied linear light — *not* in raw sRGB, which
-//! is why a naive box/bilinear resampler diverges from chafa on any
-//! reduction with high-contrast edges.
+//! **PREMUL16** alpha and **SRGB_LINEAR** gamma. Upstream uses a reversible
+//! gamma-2 approximation and lossless `(alpha + 1)` channel encoding. At
+//! reductions beyond 8191x it switches to compressed channels to prevent
+//! overflow. Both paths, optional background compositing with source coverage,
+//! and low-work nearest-neighbor sampling are ported here.
 //!
 //! We implement a pure **stretch** (resize) — placement covers the whole
 //! destination with no offset — which is exactly `smol_scale_simple`'s
-//! semantics. That eliminates the clear / clip / composite-over-color and
+//! semantics. That eliminates the clear / clip and
 //! edge-opacity machinery (all no-ops when the placement fills the dest), but
-//! every *filter* is ported faithfully (copy / one / bilinear-0h..6h / box,
+//! every *filter* is ported faithfully (copy / one / nearest / bilinear-0h..3h / box,
 //! both axes), since which one runs depends on the per-axis scale ratio.
 //!
 //! ### Endianness note
@@ -38,7 +39,8 @@
 
 #![allow(clippy::needless_range_loop)]
 
-use crate::smolscale_luts::{FROM_SRGB, INV_DIV_P16L, TO_SRGB};
+use crate::geometry::pixel_count;
+use crate::smolscale_luts::{FROM_SRGB, INV_DIV_P16, INV_DIV_P16L, TO_SRGB};
 
 // ---------------------------------------------------------------------------
 // Constants (smolscale.h / smolscale-private.h)
@@ -74,7 +76,8 @@ fn subpixel_mod(n: i64) -> i64 {
 enum FilterType {
     Copy,
     One,
-    /// Bilinear with `n` box-halvings (`0..=6`).
+    Nearest,
+    /// Bilinear with `n` box-halvings (`0..=3`).
     Bilinear(u32),
     Box,
 }
@@ -107,7 +110,7 @@ struct Dim {
 
 impl Dim {
     /// Build a dimension for a pure stretch from `src_px` to `dest_px`.
-    fn new(src_px: u32, dest_px: u32) -> Dim {
+    fn new(src_px: u32, dest_px: u32, nearest: bool) -> Dim {
         let src_size_spx = src_px as u64 * SUBPIXEL_MUL;
         let dest_size_spx = dest_px as u64 * SUBPIXEL_MUL;
         // Placement: offset 0, size == dest.
@@ -134,6 +137,9 @@ impl Dim {
         };
 
         dim.pick_filter_params(placement_ofs_spx);
+        if nearest && !matches!(dim.filter_type, FilterType::Copy | FilterType::One) {
+            dim.filter_type = FilterType::Nearest;
+        }
         dim.init_precalc(placement_ofs_spx);
         dim
     }
@@ -156,9 +162,9 @@ impl Dim {
         }
 
         // chafa splits this into `> dest*255` (which also forces 128bpp storage)
-        // and `> dest*8`; both pick BOX, and storage is always 128bpp on this
+        // and `>= dest*14`; both pick BOX, and storage is always 128bpp on this
         // path, so the two cases collapse.
-        if src_dim as u64 > dest_dim as u64 * 8 {
+        if src_dim as u64 >= dest_dim as u64 * 14 {
             self.filter_type = FilterType::Box;
         } else if src_dim <= 1 {
             self.filter_type = FilterType::One;
@@ -189,6 +195,15 @@ impl Dim {
     fn init_precalc(&mut self, placement_ofs_spx: i64) {
         match self.filter_type {
             FilterType::Copy | FilterType::One => {}
+            FilterType::Nearest => {
+                self.precalc_bilin = (0..self.dest_size_px)
+                    .map(|i| {
+                        (((u64::from(i) * 2 + 1) * u64::from(self.src_size_px))
+                            / (u64::from(self.dest_size_px) * 2))
+                            .min(u64::from(self.src_size_px) - 1) as u16
+                    })
+                    .collect();
+            }
             FilterType::Box => {
                 self.precalc_box = vec![0u32; self.placement_size_px as usize + 1];
                 precalc_boxes_array(
@@ -370,7 +385,8 @@ fn precalc_boxes_array(
     let a = BOXES_MULTIPLIER * 255;
     let b = (stride * 255) + ((f * 255) / 256);
     *span_step = (frac_step_f / SMALL_MUL) as u32;
-    *span_mul = ((a + (b / 2)) / (b + 1)) as u32;
+    // Undershoot: rounding can overflow the alpha lane on very wide spans.
+    *span_mul = (a / (b + 1)) as u32;
 
     // Left fringe
     let mut i = 0usize;
@@ -424,7 +440,8 @@ fn from_srgb_pixel(pixel: &mut [u64; 2]) {
         | FROM_SRGB[(part & 0xff) as usize] as u64;
 
     let part = pixel[1];
-    pixel[1] = ((FROM_SRGB[(part >> 32) as usize] as u64) << 32) | ((part & 0xffff_ffff) << 3) | 7;
+    pixel[1] =
+        ((FROM_SRGB[(part >> 32) as usize] as u64) << 32) | ((part & 0xffff_ffff) << 8) | 0xff;
 }
 
 /// `to_srgb_pixel_xxxa_128bpp`.
@@ -438,10 +455,18 @@ fn to_srgb_pixel(pixel_in: &[u64; 2], pixel_out: &mut [u64; 2]) {
 
 /// `unpremul_p16l_to_ul_128bpp`.
 #[inline]
-fn unpremul_p16l_to_ul(input: &[u64; 2], out: &mut [u64; 2], alpha: u8) {
-    let m = INV_DIV_P16L[alpha as usize] as u64;
-    out[0] = (input[0].wrapping_mul(m) >> INVERTED_DIV_SHIFT_P16L) & 0x0000_07ff_0000_07ff;
-    out[1] = (input[1].wrapping_mul(m) >> INVERTED_DIV_SHIFT_P16L) & 0x0000_07ff_0000_07ff;
+fn unpremul_pixel(input: &[u64; 2], out: &mut [u64; 2], alpha: u8, linear: bool) {
+    let (m, shift, mask) = if linear {
+        (
+            INV_DIV_P16L[alpha as usize],
+            INVERTED_DIV_SHIFT_P16L,
+            0x0000_07ff_0000_07ff,
+        )
+    } else {
+        (INV_DIV_P16[alpha as usize], 16, 0x0000_00ff_0000_00ff)
+    };
+    out[0] = (input[0].wrapping_mul(u64::from(m)) >> shift) & mask;
+    out[1] = (input[1].wrapping_mul(u64::from(m)) >> shift) & mask;
 }
 
 // ---------------------------------------------------------------------------
@@ -452,32 +477,30 @@ fn unpremul_p16l_to_ul(input: &[u64; 2], out: &mut [u64; 2], alpha: u8) {
 /// 128bpp PREMUL16 / SRGB_LINEAR storage. Port of
 /// `unpack_pixel_123a_u_to_123a_p16l_128bpp`.
 #[inline]
-fn unpack_pixel(p: u32, out: &mut [u64; 2]) {
+fn unpack_pixel(p: u32, out: &mut [u64; 2], linear: bool) {
     let p64 = p as u64;
     let alpha = (p & 0xff) as u8;
 
     out[0] = ((p64 & 0xff00_0000) << 8) | ((p64 & 0x00ff_0000) >> 16);
     out[1] = (p64 & 0x0000_ff00) << 24;
 
-    from_srgb_pixel(out);
-    // Premultiply by the raw alpha — matching the `a234` unpack chafa actually
-    // selects on a little-endian host (RGBA8 → ABGR8), which multiplies by
-    // `alpha`, *not* `premul_ul_to_p16l`'s `(alpha + 2)`. The pack side's
-    // `unpremul_p16l` (the `(alpha + 2)`-tuned inverse) leaves chafa's roundtrip
-    // very slightly lossy (e.g. opaque 128 → 127); we reproduce that exactly.
-    out[0] = out[0].wrapping_mul(alpha as u64);
-    out[1] = out[1].wrapping_mul(alpha as u64);
+    if linear {
+        from_srgb_pixel(out);
+    }
+    // Lossless 19-bit linear channels, encoded with (alpha + 1).
+    out[0] = out[0].wrapping_mul(alpha as u64 + 1);
+    out[1] = out[1].wrapping_mul(alpha as u64 + 1);
 
-    out[1] = (out[1] & 0xffff_ffff_0000_0000) | ((alpha as u64) << 8) | alpha as u64;
+    out[1] = (out[1] & 0xffff_ffff_0000_0000) | ((alpha as u64) << 8) | 0xff;
 }
 
 /// Unpack a whole source row of `n` pixels (big-endian framed).
-fn unpack_row(src: &[u8], dest: &mut [u64], n: usize) {
+fn unpack_row(src: &[u8], dest: &mut [u64], n: usize, linear: bool) {
     for i in 0..n {
         let b = &src[i * 4..i * 4 + 4];
         let p = u32::from_be_bytes([b[0], b[1], b[2], b[3]]);
         let mut px = [0u64; 2];
-        unpack_pixel(p, &mut px);
+        unpack_pixel(p, &mut px, linear);
         dest[i * 2] = px[0];
         dest[i * 2 + 1] = px[1];
     }
@@ -495,14 +518,16 @@ fn pack_1234(t: &[u64; 2]) -> u32 {
 /// Pack a finished 128bpp p16l/linear row back to `RGBA8_UNASSOCIATED`
 /// (written big-endian, keeping `R,G,B,A`). Port of the
 /// `PREMUL16,LINEAR -> 1234,UNASSOCIATED,COMPRESSED` repack.
-fn pack_row(src: &[u64], dest: &mut [u8], n: usize) {
+fn pack_row(src: &[u64], dest: &mut [u8], n: usize, linear: bool) {
     for i in 0..n {
         let in_px = [src[i * 2], src[i * 2 + 1]];
         let alpha = (in_px[1] >> 8) as u8;
         let mut t = [0u64; 2];
-        unpremul_p16l_to_ul(&in_px, &mut t, alpha);
-        let t_in = t;
-        to_srgb_pixel(&t_in, &mut t);
+        unpremul_pixel(&in_px, &mut t, alpha, linear);
+        if linear {
+            let t_in = t;
+            to_srgb_pixel(&t_in, &mut t);
+        }
         t[1] = (t[1] & 0xffff_ffff_0000_0000) | alpha as u64;
         let packed = pack_1234(&t);
         dest[i * 4..i * 4 + 4].copy_from_slice(&packed.to_be_bytes());
@@ -553,6 +578,8 @@ struct ScaleCtx<'a> {
     src_rowstride: usize,
     hdim: Dim,
     vdim: Dim,
+    background: Option<[u64; 2]>,
+    linear: bool,
 }
 
 /// Per-batch scratch ring (`SmolLocalCtx`), 128bpp (2 u64/pixel).
@@ -586,7 +613,7 @@ impl ScaleCtx<'_> {
 
     // -- Horizontal filters -------------------------------------------------
 
-    /// `interp_horizontal_bilinear_{0..6}h_128bpp`, unified over `n_halvings`.
+    /// `interp_horizontal_bilinear_{0..3}h_128bpp`, unified over `n_halvings`.
     fn hfilter_bilinear(&self, src: &[u64], dest: &mut [u64], n_halvings: u32) {
         let precalc = &self.hdim.precalc_bilin;
         let width = self.hdim.placement_size_px as usize;
@@ -656,23 +683,39 @@ impl ScaleCtx<'_> {
         }
     }
 
-    /// `interp_horizontal_copy_128bpp`.
-    fn hfilter_copy(&self, src: &[u64], dest: &mut [u64]) {
-        let n = self.hdim.placement_size_px as usize * 2;
-        dest[..n].copy_from_slice(&src[..n]);
-    }
-
     /// `scale_horizontal`: unpack `src_row` into the scratch row, run the
     /// horizontal filter into `dest_idx`, then apply edge opacity.
     fn scale_horizontal(&self, local: &mut LocalCtx, src_row_index: u32, dest_idx: usize) {
         debug_assert!(dest_idx != 3);
         let src = self.src_row(src_row_index);
-        unpack_row(src, &mut local.rows[3], self.hdim.src_size_px as usize);
+        if self.hdim.filter_type == FilterType::Copy {
+            // No filtering or edge opacity is needed: unpack directly into
+            // the output row, bypassing the scratch-row copy.
+            unpack_row(
+                src,
+                &mut local.rows[dest_idx],
+                self.hdim.src_size_px as usize,
+                self.linear,
+            );
+            return;
+        }
+        unpack_row(
+            src,
+            &mut local.rows[3],
+            self.hdim.src_size_px as usize,
+            self.linear,
+        );
 
         let mut dest = std::mem::take(&mut local.rows[dest_idx]);
         match self.hdim.filter_type {
-            FilterType::Copy => self.hfilter_copy(&local.rows[3], &mut dest),
+            FilterType::Copy => unreachable!("copy handled while unpacking"),
             FilterType::One => self.hfilter_one(&local.rows[3], &mut dest),
+            FilterType::Nearest => {
+                for (i, &offset) in self.hdim.precalc_bilin.iter().enumerate() {
+                    let offset = usize::from(offset) * 2;
+                    dest[i * 2..i * 2 + 2].copy_from_slice(&local.rows[3][offset..offset + 2]);
+                }
+            }
             FilterType::Bilinear(n) => self.hfilter_bilinear(&local.rows[3], &mut dest, n),
             FilterType::Box => self.hfilter_box(&local.rows[3], &mut dest),
         }
@@ -719,7 +762,7 @@ impl ScaleCtx<'_> {
 
     /// Bilinear vertical scaling for one destination row. Returns the index of
     /// the parts row holding the finished pixels (`2`). Unified over
-    /// `n_halvings` (`scale_dest_row_bilinear_{0..6}h_128bpp`).
+    /// `n_halvings` (`scale_dest_row_bilinear_{0..3}h_128bpp`).
     fn scale_dest_row_bilinear(
         &self,
         local: &mut LocalCtx,
@@ -830,7 +873,7 @@ impl ScaleCtx<'_> {
         local.rows[2] = dest;
     }
 
-    /// `scale_dest_row_box_128bpp`. Returns parts-row index `0`.
+    /// `scale_dest_row_box_128bpp`. Returns parts-row index `2`.
     fn scale_dest_row_box(&self, local: &mut LocalCtx, dest_row_index: u32) -> usize {
         let (mut ofs_y, _ofs_y_max, w1, w2, n) = unpack_box_precalc(
             self.vdim.precalc_box[dest_row_index as usize],
@@ -840,7 +883,10 @@ impl ScaleCtx<'_> {
         let width = width_px * 2;
 
         // First input row -> weighted into rows[1].
-        self.scale_horizontal(local, ofs_y, 0);
+        if ofs_y != local.src_ofs {
+            self.scale_horizontal(local, ofs_y, 0);
+            local.src_ofs = ofs_y;
+        }
         {
             let mut acc = std::mem::take(&mut local.rows[1]);
             let row0 = &local.rows[0];
@@ -854,6 +900,7 @@ impl ScaleCtx<'_> {
         // Whole input rows -> add into rows[1].
         for _ in 0..n {
             self.scale_horizontal(local, ofs_y, 0);
+            local.src_ofs = ofs_y;
             let mut acc = std::mem::take(&mut local.rows[1]);
             let row0 = &local.rows[0];
             for i in 0..width {
@@ -864,8 +911,9 @@ impl ScaleCtx<'_> {
         }
 
         // Last input row -> weighted add into rows[1].
-        if ofs_y < self.vdim.src_size_px {
+        if w2 > 0 && ofs_y < self.vdim.src_size_px {
             self.scale_horizontal(local, ofs_y, 0);
+            local.src_ofs = ofs_y;
             let mut acc = std::mem::take(&mut local.rows[1]);
             let row0 = &local.rows[0];
             for px in 0..width_px {
@@ -877,11 +925,12 @@ impl ScaleCtx<'_> {
             local.rows[1] = acc;
         }
 
-        // Finalize rows[1] -> rows[0].
+        // Keep the boundary source row in rows[0] for the next output span.
+        // Finalize rows[1] -> rows[2], which can then be composited in place.
         let span_mul = self.vdim.span_mul as u64;
         let opacity = self.edge_opacity_v(dest_row_index, self.vdim.placement_size_px - 1);
         {
-            let mut dest = std::mem::take(&mut local.rows[0]);
+            let mut dest = std::mem::take(&mut local.rows[2]);
             let acc = &local.rows[1];
             match opacity {
                 None => {
@@ -898,10 +947,10 @@ impl ScaleCtx<'_> {
                     }
                 }
             }
-            local.rows[0] = dest;
+            local.rows[2] = dest;
         }
 
-        0
+        2
     }
 
     /// `scale_dest_row_one_128bpp`. Returns parts-row index `1`.
@@ -940,6 +989,11 @@ impl ScaleCtx<'_> {
         match self.vdim.filter_type {
             FilterType::Copy => self.scale_dest_row_copy(local, dest_row_index),
             FilterType::One => self.scale_dest_row_one(local, dest_row_index),
+            FilterType::Nearest => {
+                let src_row = u32::from(self.vdim.precalc_bilin[dest_row_index as usize]);
+                self.scale_horizontal(local, src_row, 0);
+                0
+            }
             FilterType::Bilinear(n) => self.scale_dest_row_bilinear(local, dest_row_index, n),
             FilterType::Box => self.scale_dest_row_box(local, dest_row_index),
         }
@@ -956,8 +1010,11 @@ impl ScaleCtx<'_> {
 
         for row in 0..self.vdim.dest_size_px {
             let scaled = self.vfilter(&mut local, row);
+            if let Some(bg) = self.background {
+                composite_row_over_bg(&mut local.rows[scaled][..placement_px * 2], bg);
+            }
             let drow = &mut dest[row as usize * dest_rowstride..];
-            pack_row(&local.rows[scaled], drow, placement_px);
+            pack_row(&local.rows[scaled], drow, placement_px, self.linear);
         }
     }
 }
@@ -969,31 +1026,96 @@ impl ScaleCtx<'_> {
 /// Resample an `RGBA8` (unassociated alpha) image from `sw`×`sh` to `dw`×`dh`,
 /// bit-exactly matching chafa's `smol_scale_simple` on a little-endian,
 /// non-accelerated host. Input/output are tightly packed `R,G,B,A` bytes.
+///
+/// # Panics
+///
+/// Panics for dimensions outside `1..=65535` or an incorrectly sized buffer.
 pub fn scale_rgba8(src: &[u8], sw: usize, sh: usize, dw: usize, dh: usize) -> Vec<u8> {
-    assert_eq!(src.len(), sw * sh * 4, "source buffer size mismatch");
-    let mut dest = vec![0u8; dw * dh * 4];
-    if dw == 0 || dh == 0 || sw == 0 || sh == 0 {
-        return dest;
-    }
+    scale_rgba8_inner(src, sw, sh, dw, dh, None, false)
+}
 
-    // `is_noop`: identical dimensions and pixel type → chafa raw-copies the
-    // source bytes (`copy_row`), bypassing the unpack/pack roundtrip. This
-    // matters for unassociated-alpha pixels, whose straight color is preserved
-    // verbatim here but cannot be recovered through premultiply→unpremultiply
-    // when alpha is 0 (`INV_DIV_P16L[0] == 0`).
-    if sw == dw && sh == dh {
+/// Stretch and composite over an opaque background in linear light, retaining
+/// source coverage as alpha. Matches chafa's symbol preparation pipeline.
+/// Set `nearest` for chafa's low-work (`work_factor_int < 3`) sampling.
+///
+/// # Panics
+///
+/// Panics for dimensions outside `1..=65535` or an incorrectly sized buffer.
+pub fn scale_rgba8_with_background(
+    src: &[u8],
+    sw: usize,
+    sh: usize,
+    dw: usize,
+    dh: usize,
+    bg_rgb: u32,
+    nearest: bool,
+) -> Vec<u8> {
+    scale_rgba8_inner(src, sw, sh, dw, dh, Some(bg_rgb), nearest)
+}
+
+fn scale_rgba8_inner(
+    src: &[u8],
+    sw: usize,
+    sh: usize,
+    dw: usize,
+    dh: usize,
+    background: Option<u32>,
+    nearest: bool,
+) -> Vec<u8> {
+    let source_size = pixel_count(sw, sh) * 4;
+    let dest_size = pixel_count(dw, dh) * 4;
+    assert_eq!(src.len(), source_size, "source buffer size mismatch");
+    let mut dest = vec![0u8; dest_size];
+
+    // Background compositing still needs the linear-light unpack/pack path.
+    if sw == dw && sh == dh && background.is_none() {
         dest.copy_from_slice(src);
         return dest;
     }
 
+    // Match smolscale's precision guard: enormous box spans use compressed
+    // channels so the packed 32-bit accumulators cannot overflow.
+    let linear = sw <= dw * 8191 && sh <= dh * 8191;
+    let background = background.map(|rgb| {
+        let bytes = [
+            ((rgb >> 16) & 0xff) as u8,
+            ((rgb >> 8) & 0xff) as u8,
+            rgb as u8,
+            255,
+        ];
+        let mut parts = [0; 2];
+        unpack_pixel(u32::from_be_bytes(bytes), &mut parts, linear);
+        parts
+    });
     let ctx = ScaleCtx {
         src_pixels: src,
         src_rowstride: sw * 4,
-        hdim: Dim::new(sw as u32, dw as u32),
-        vdim: Dim::new(sh as u32, dh as u32),
+        hdim: Dim::new(sw as u32, dw as u32, nearest),
+        vdim: Dim::new(sh as u32, dh as u32, nearest),
+        background,
+        linear,
     };
     ctx.do_rows(&mut dest);
     dest
+}
+
+/// `composite_over_color_src_alpha_p16_128bpp_span` at full layer opacity.
+fn composite_row_over_bg(row: &mut [u64], background: [u64; 2]) {
+    for pixel in row.chunks_exact_mut(2) {
+        let alpha = (pixel[1] >> 8) & 0xff;
+        let nonzero = u64::from(alpha != 0);
+        let weight = 256 - alpha - nonzero;
+        for c in 0..2 {
+            let blended = pixel[c] * nonzero
+                + ((background[c]
+                    .wrapping_mul(weight)
+                    .wrapping_add(0x0000_0080_0000_0080)
+                    >> 8)
+                    & MASK24);
+            pixel[c] = ((blended >> 8) & 0x0000_ffff_0000_ffff) * (alpha + 1);
+        }
+        pixel[1] = (pixel[1] & 0xffff_ffff_0000_0000) | (alpha << 8) | 0xff;
+    }
 }
 
 #[cfg(test)]
@@ -1009,9 +1131,25 @@ mod tests {
 
     #[test]
     fn downscale_2x1_is_linear_average() {
-        // Red + blue -> linear-light midpoint 0xbb, not the sRGB 0x7f.
+        // Red + blue -> 0xb4 under upstream's reversible gamma-2 curve.
         let src = [0xff, 0x00, 0x00, 0xff, 0x00, 0x00, 0xff, 0xff];
         let out = scale_rgba8(&src, 2, 1, 1, 1);
-        assert_eq!(out, [0xbb, 0x00, 0xbb, 0xff]);
+        assert_eq!(out, [0xb4, 0x00, 0xb4, 0xff]);
+    }
+
+    #[test]
+    fn constant_colors_roundtrip_at_every_alpha() {
+        for value in 0..=255 {
+            for alpha in 0..=255 {
+                let src = [value, 255 - value, value / 2, alpha];
+                assert_eq!(scale_rgba8(&src, 1, 1, 2, 1), src.repeat(2));
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "pixel dimensions must be in 1..=65535")]
+    fn oversized_destination_is_rejected_before_allocating() {
+        scale_rgba8(&[0; 4], 1, 1, usize::MAX, 1);
     }
 }

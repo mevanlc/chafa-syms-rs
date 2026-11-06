@@ -10,16 +10,11 @@ use crate::color::{color_diff, Color, ColorPair, COLOR_PAIR_BG, COLOR_PAIR_FG};
 use crate::geometry::{SYMBOL_HEIGHT_PIXELS, SYMBOL_N_PIXELS, SYMBOL_WIDTH_PIXELS};
 use crate::symbol::Symbol;
 
-/// Transient 8x8 pixel block plus lazily-computed sort indices.
+/// Transient 8x8 pixel block.
 /// Mirrors `ChafaWorkCell`.
 pub struct WorkCell {
     /// The cell's 64 pixels, row-major.
     pub pixels: [Color; SYMBOL_N_PIXELS],
-    /// Per-channel pixel indices sorted ascending by that channel (lazy).
-    sorted_index: [[u8; SYMBOL_N_PIXELS]; 4],
-    have_sorted: [bool; 4],
-    /// Channel with the greatest value range (`-1` until computed).
-    dominant_channel: i32,
 }
 
 impl WorkCell {
@@ -34,63 +29,7 @@ impl WorkCell {
                 .copy_from_slice(&src_image[start..start + SYMBOL_WIDTH_PIXELS]);
             i += SYMBOL_WIDTH_PIXELS;
         }
-        WorkCell {
-            pixels,
-            sorted_index: [[0; SYMBOL_N_PIXELS]; 4],
-            have_sorted: [false; 4],
-            dominant_channel: -1,
-        }
-    }
-
-    /// Stable counting sort of pixel indices by channel `ch`, cached.
-    /// Port of `chafa_sort_pixel_index_by_channel` (`chafa-pixops.c:891`).
-    fn sorted_pixels(&mut self, ch: usize) -> &[u8; SYMBOL_N_PIXELS] {
-        if !self.have_sorted[ch] {
-            // Bucket by channel value; buckets fill in pixel-index order and are
-            // emitted in value order -> stable sort, ties by original index.
-            let mut buckets: Vec<Vec<u8>> = vec![Vec::new(); 256];
-            for (i, p) in self.pixels.iter().enumerate() {
-                buckets[p.ch[ch] as usize].push(i as u8);
-            }
-            let mut k = 0;
-            for bucket in &buckets {
-                for &idx in bucket {
-                    self.sorted_index[ch][k] = idx;
-                    k += 1;
-                }
-            }
-            self.have_sorted[ch] = true;
-        }
-        &self.sorted_index[ch]
-    }
-
-    /// Channel with the greatest min..max range. Port of
-    /// `work_cell_get_dominant_channel`. Ties resolve to the lowest channel
-    /// (strict `>`).
-    fn dominant_channel(&mut self) -> usize {
-        if self.dominant_channel >= 0 {
-            return self.dominant_channel as usize;
-        }
-        let mut ranges = [0i32; 4];
-        for ch in 0..4 {
-            let (i0, ilast) = {
-                let sorted = self.sorted_pixels(ch);
-                (sorted[0] as usize, sorted[SYMBOL_N_PIXELS - 1] as usize)
-            };
-            let lo = self.pixels[i0].ch[ch] as i32;
-            let hi = self.pixels[ilast].ch[ch] as i32;
-            ranges[ch] = hi - lo;
-        }
-        let mut best_ch = 0;
-        let mut best_range = ranges[0];
-        for ch in 1..4 {
-            if ranges[ch] > best_range {
-                best_range = ranges[ch];
-                best_ch = ch;
-            }
-        }
-        self.dominant_channel = best_ch as i32;
-        best_ch
+        WorkCell { pixels }
     }
 
     /// Threshold the 64 pixels into a `u64` bitmap: set a bit where the pixel is
@@ -112,14 +51,32 @@ impl WorkCell {
     /// Two contrasting colors via median cut along the dominant channel:
     /// BG = darkest pixel, FG = brightest. Port of
     /// `chafa_work_cell_get_contrasting_color_pair`.
-    pub fn contrasting_color_pair(&mut self) -> ColorPair {
-        let ch = self.dominant_channel();
-        let (i0, ilast) = {
-            let sorted = self.sorted_pixels(ch);
-            (sorted[0] as usize, sorted[SYMBOL_N_PIXELS - 1] as usize)
-        };
-        let bg = self.pixels[i0];
-        let fg = self.pixels[ilast];
+    pub fn contrasting_color_pair(&self) -> ColorPair {
+        // Only extrema are needed. Preserve the old stable-sort endpoints:
+        // first minimum, last maximum, and first channel on equal ranges.
+        let mut min_index = [0; 4];
+        let mut max_index = [0; 4];
+        for (i, pixel) in self.pixels.iter().enumerate().skip(1) {
+            for ch in 0..4 {
+                if pixel.ch[ch] < self.pixels[min_index[ch]].ch[ch] {
+                    min_index[ch] = i;
+                }
+                if pixel.ch[ch] >= self.pixels[max_index[ch]].ch[ch] {
+                    max_index[ch] = i;
+                }
+            }
+        }
+        let mut best_ch = 0;
+        let mut best_range = 0;
+        for ch in 0..4 {
+            let range = self.pixels[max_index[ch]].ch[ch] - self.pixels[min_index[ch]].ch[ch];
+            if range > best_range {
+                best_range = range;
+                best_ch = ch;
+            }
+        }
+        let bg = self.pixels[min_index[best_ch]];
+        let fg = self.pixels[max_index[best_ch]];
         let mut pair = ColorPair::default();
         pair.colors[COLOR_PAIR_BG] = bg;
         pair.colors[COLOR_PAIR_FG] = fg;
@@ -201,11 +158,16 @@ mod tests {
     }
 
     #[test]
-    fn dominant_channel_of_flat_is_zero() {
-        let grid = solid_block([5, 5, 5, 255]);
-        let mut wc = WorkCell::init(&grid, 8, 0, 0);
-        // All ranges zero -> first channel wins.
-        assert_eq!(wc.dominant_channel(), 0);
+    fn contrasting_pair_preserves_stable_endpoint_ties() {
+        let mut grid = solid_block([128, 128, 0, 255]);
+        grid[0] = Color::new(0, 10, 1, 255);
+        grid[1] = Color::new(0, 0, 2, 255);
+        grid[62] = Color::new(255, 255, 3, 255);
+        grid[63] = Color::new(255, 240, 4, 255);
+        let wc = WorkCell::init(&grid, 8, 0, 0);
+        let pair = wc.contrasting_color_pair();
+        assert_eq!(pair.colors[COLOR_PAIR_BG], grid[0]);
+        assert_eq!(pair.colors[COLOR_PAIR_FG], grid[63]);
     }
 
     #[test]

@@ -1,7 +1,6 @@
 //! Phase 3 gate: the compiled default symbol map (selection + dedup + sort)
 //! must match chafa's prepared `symbol_map->symbols` exactly — same codepoints
-//! in the same `(popcount, codepoint)` order. Run against the deterministic
-//! (tiebreak) oracle.
+//! in the same `(popcount, codepoint)` order used by current upstream.
 
 mod support;
 

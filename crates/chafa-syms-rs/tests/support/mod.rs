@@ -9,8 +9,8 @@
 //! Colors in the dump are packed `0xAARRGGBB` (chafa's `chafa_pack_color`).
 //!
 //! The oracle binary/lib are located via env vars with build-tree defaults:
-//! - `CHAFA_ORACLE_BIN` (default `~/p/gh/chafa/tools/chafa/.libs/chafa`)
-//! - `CHAFA_ORACLE_LIB` (default `~/p/gh/chafa/chafa/.libs`, used as `DYLD_LIBRARY_PATH`)
+//! - `CHAFA_ORACLE_BIN` (default sibling `chafa/tools/chafa/.libs/chafa`)
+//! - `CHAFA_ORACLE_LIB` (default sibling `chafa/chafa/.libs`, used as `DYLD_LIBRARY_PATH`)
 //!
 //! If the binary is missing, [`oracle_available`] returns false so tests can
 //! skip gracefully on machines without the built oracle.
@@ -79,16 +79,12 @@ impl OracleGrid {
     }
 }
 
-fn home() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into()))
-}
-
 /// Path to the patched oracle binary.
 pub fn oracle_bin() -> PathBuf {
     if let Ok(p) = std::env::var("CHAFA_ORACLE_BIN") {
         return PathBuf::from(p);
     }
-    home().join("p/gh/chafa/tools/chafa/.libs/chafa")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../chafa/tools/chafa/.libs/chafa")
 }
 
 /// Directory to put on `DYLD_LIBRARY_PATH` so the binary loads the patched lib.
@@ -96,7 +92,7 @@ pub fn oracle_lib() -> PathBuf {
     if let Ok(p) = std::env::var("CHAFA_ORACLE_LIB") {
         return PathBuf::from(p);
     }
-    home().join("p/gh/chafa/chafa/.libs")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../chafa/chafa/.libs")
 }
 
 /// Whether the oracle binary exists (tests should skip if not).
@@ -156,8 +152,6 @@ pub fn oracle_render(
         .args(&args)
         .env("CHAFA_DUMP_CELLS", &dump_path)
         .env("DYLD_LIBRARY_PATH", oracle_lib())
-        // Deterministic (popcount, codepoint) symbol order — matches the port.
-        .env("CHAFA_SYMS_RS_TIEBREAK", "1")
         .output()
         .expect("run oracle");
 
@@ -232,7 +226,6 @@ pub fn oracle_render_dump(
         .env("CHAFA_DUMP_CELLS", &cells_path)
         .env("CHAFA_DUMP_ANSI", &ansi_path)
         .env("DYLD_LIBRARY_PATH", oracle_lib())
-        .env("CHAFA_SYMS_RS_TIEBREAK", "1")
         .output()
         .expect("run oracle");
     assert!(
@@ -282,7 +275,7 @@ pub struct SymMapEntry {
 }
 
 /// Capture the compiled symbol map (narrow, wide) for a given mode/flag set,
-/// using the default symbol selectors. Deterministic tiebreak is enabled.
+/// using the default symbol selectors and upstream's deterministic ordering.
 pub fn oracle_dump_symmap(extra_args: &[&str]) -> (Vec<SymMapEntry>, Vec<SymMapEntry>) {
     let png_path = unique_tmp("png");
     let dump_path = unique_tmp("symmap");
@@ -310,7 +303,6 @@ pub fn oracle_dump_symmap(extra_args: &[&str]) -> (Vec<SymMapEntry>, Vec<SymMapE
         .args(&args)
         .env("CHAFA_DUMP_SYMMAP", &dump_path)
         .env("DYLD_LIBRARY_PATH", oracle_lib())
-        .env("CHAFA_SYMS_RS_TIEBREAK", "1")
         .output()
         .expect("run oracle");
     assert!(output.status.success(), "oracle failed for symmap dump");

@@ -72,7 +72,7 @@ fn fixed_color(index: usize) -> Color {
 /// cutoffs (`chafa-palette.c:224-235`).
 fn cube_channel_index(v: u8) -> u32 {
     let v = v as i32;
-    if v < 0x5f / 2 {
+    if v < (0x5f + 1) / 2 {
         0
     } else if v < (0x5f + 0x87) / 2 {
         1
@@ -257,7 +257,7 @@ fn pick_grays(color: Color, c: &mut Candidates) {
 
     let error = color_diff(color, fixed_color((i + 1) as usize));
     let step: i32 = if error < last_error {
-        c.update(i, error); // chafa updates index i (not i+1) here — faithful.
+        c.update(i + 1, error);
         last_error = error;
         i += 1;
         1
@@ -286,8 +286,8 @@ mod tests {
     #[test]
     fn cube_cutoffs() {
         assert_eq!(cube_channel_index(0), 0);
-        assert_eq!(cube_channel_index(0x2e), 0); // 46 < 47
-        assert_eq!(cube_channel_index(0x2f), 1); // 47
+        assert_eq!(cube_channel_index(47), 0);
+        assert_eq!(cube_channel_index(48), 1);
         assert_eq!(cube_channel_index(0xff), 5);
     }
 
@@ -311,5 +311,35 @@ mod tests {
         let p = Palette::new(PaletteType::Fixed16, 0xffffff, 0x000000, 127);
         let idx = p.lookup_nearest(Color::new(0xff, 0, 0, 255));
         assert_eq!(idx, 9); // bright red
+    }
+
+    #[test]
+    fn fixed_palettes_find_the_nearest_color() {
+        for ptype in [PaletteType::Fixed240, PaletteType::Fixed256] {
+            let palette = Palette::new(ptype, 0xffffff, 0, 128);
+            let first = if ptype == PaletteType::Fixed240 {
+                16
+            } else {
+                0
+            };
+            for value in 0..=255 {
+                for color in [
+                    Color::new(value, value, value, 255),
+                    Color::new(value, 0, 0, 255),
+                    Color::new(0, value, 0, 255),
+                    Color::new(0, 0, value, 255),
+                ] {
+                    let nearest_error = (first..256)
+                        .map(|i| color_diff(color, fixed_color(i)))
+                        .min()
+                        .unwrap();
+                    assert_eq!(
+                        palette.lookup(color).error[0],
+                        nearest_error,
+                        "{ptype:?} {color:?}"
+                    );
+                }
+            }
+        }
     }
 }

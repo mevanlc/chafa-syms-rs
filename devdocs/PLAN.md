@@ -1,5 +1,11 @@
 # chafa-syms-rs — Port Plan
 
+> **Current baseline (2026-11-06):** upstream `c897fce`, with the oracle in the
+> sibling `../chafa` checkout (`db17c15` includes its dump hooks). The original
+> plan below records historical choices and source locations. Current scaler,
+> preprocessing, and parity behavior is documented in the READMEs and
+> [`oracle/README.md`](oracle/README.md).
+
 > A pure-Rust port of the **symbol-rendering core** of [chafa](https://hpjansson.org/chafa/):
 > fancy, tunable Unicode symbol rendering of raster graphics.
 

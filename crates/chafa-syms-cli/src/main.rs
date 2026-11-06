@@ -8,6 +8,7 @@
 use std::{ffi::OsString, process::ExitCode};
 
 use chafa_syms_rs::canvas::{Canvas, CanvasConfig, StippleMode};
+use chafa_syms_rs::geometry::{IMAGE_DIMENSION_MAX, SYMBOL_HEIGHT_PIXELS, SYMBOL_WIDTH_PIXELS};
 use chafa_syms_rs::printer::Optimizations;
 use chafa_syms_rs::select::CanvasMode;
 use chafa_syms_rs::{PixelType, SymbolMap};
@@ -47,8 +48,8 @@ struct Args {
     #[arg(short = 'w', long, default_value_t = 5)]
     work: u32,
 
-    /// Worker threads (-1 = auto).
-    #[arg(long, default_value_t = -1)]
+    /// Worker threads (any negative value = auto).
+    #[arg(long, default_value_t = -1, allow_negative_numbers = true)]
     threads: i32,
 
     /// Symbol selector string (e.g. `block+border`, `ascii`, `all`), or `help`.
@@ -151,15 +152,37 @@ fn run(args: &Args) -> Result<(), String> {
             .build_global();
     }
 
-    // Decode image.
-    let img = image::open(&args.file)
-        .map_err(|e| format!("cannot open {}: {e}", args.file))?
+    // Check loader dimensions before allocating the decoded frame.
+    use image::ImageDecoder;
+    let mut reader = image::ImageReader::open(&args.file)
+        .map_err(|e| format!("cannot open {}: {e}", args.file))?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(IMAGE_DIMENSION_MAX as u32);
+    limits.max_image_height = Some(IMAGE_DIMENSION_MAX as u32);
+    reader.limits(limits.clone());
+    let decoder = reader
+        .into_decoder()
+        .map_err(|e| format!("cannot decode {}: {e}", args.file))?;
+    let (iw, ih) = decoder.dimensions();
+    if iw == 0 || ih == 0 || u64::from(iw) * u64::from(ih) > 256 * 1024 * 1024 {
+        return Err("source image must be nonempty and contain at most 256Mpx".into());
+    }
+    limits
+        .reserve(decoder.total_bytes())
+        .map_err(|e| e.to_string())?;
+    let img = image::DynamicImage::from_decoder(decoder)
+        .map_err(|e| format!("cannot decode {}: {e}", args.file))?
         .to_rgba8();
     let (iw, ih) = (img.width() as usize, img.height() as usize);
 
     // Geometry.
     let (max_cols, max_rows) = view_size();
-    let (cols, rows) = geometry(args, iw, ih, max_cols, max_rows);
+    let (cols, rows) = geometry(args, iw, ih, max_cols, max_rows)?;
+    if cols > IMAGE_DIMENSION_MAX / SYMBOL_WIDTH_PIXELS
+        || rows > IMAGE_DIMENSION_MAX / SYMBOL_HEIGHT_PIXELS
+    {
+        return Err("output dimensions must not exceed 8191 cells per side".into());
+    }
 
     // Config.
     let mut symbol_map = cli_symbols(mode, args.symbols.as_deref())?;
@@ -370,44 +393,49 @@ fn view_size() -> (usize, usize) {
 
 /// Compute the cell grid. Honors `--size` (`WxH`/`W`/`xH`), else fits the image
 /// into the view preserving aspect using `font_ratio`.
-fn geometry(args: &Args, iw: usize, ih: usize, max_cols: usize, max_rows: usize) -> (usize, usize) {
-    let fr = if args.font_ratio > 0.0 {
-        args.font_ratio
-    } else {
-        0.5
-    };
+fn geometry(
+    args: &Args,
+    iw: usize,
+    ih: usize,
+    max_cols: usize,
+    max_rows: usize,
+) -> Result<(usize, usize), String> {
+    let fr = args.font_ratio;
+    if !fr.is_finite() || fr <= 0.0 {
+        return Err("--font-ratio must be positive and finite".into());
+    }
 
     if let Some(sz) = &args.size {
-        if let Some((c, r)) = parse_size(sz) {
-            match (c, r) {
-                (Some(c), Some(r)) => return (c.max(1), r.max(1)),
-                (Some(c), None) => {
-                    let rows = ((c as f32) * (ih as f32) / (iw as f32) * fr).ceil() as usize;
-                    return (c.max(1), rows.max(1));
-                }
-                (None, Some(r)) => {
-                    let cols = ((r as f32) * (iw as f32) / (ih as f32) / fr).ceil() as usize;
-                    return (cols.max(1), r.max(1));
-                }
-                (None, None) => {}
+        match parse_size(sz)? {
+            (Some(c), Some(r)) => return Ok((c, r)),
+            (Some(c), None) => {
+                let rows = ((c as f32) * (ih as f32) / (iw as f32) * fr).ceil() as usize;
+                return Ok((c, rows.max(1)));
             }
+            (None, Some(r)) => {
+                let cols = ((r as f32) * (iw as f32) / (ih as f32) / fr).ceil() as usize;
+                return Ok((cols.max(1), r));
+            }
+            (None, None) => {}
         }
     }
 
     // --scale: multiply the natural (1 cell = 8x8 px) size, or "max" to fit.
     if let Some(scale) = &args.scale {
         if scale != "max" {
-            if let Ok(n) = scale.parse::<f32>() {
-                if n > 0.0 {
-                    let cols = ((iw as f32 / 8.0) * n).ceil() as usize;
-                    let rows = ((ih as f32 / 8.0) * n * fr).ceil() as usize;
-                    return (cols.clamp(1, max_cols), rows.clamp(1, max_rows));
-                }
+            let n = scale
+                .parse::<f32>()
+                .map_err(|_| "--scale must be a positive finite number or max")?;
+            if !n.is_finite() || n <= 0.0 {
+                return Err("--scale must be a positive finite number or max".into());
             }
+            let cols = ((iw as f32 / 8.0) * n).ceil() as usize;
+            let rows = ((ih as f32 / 8.0) * n * fr).ceil() as usize;
+            return Ok((cols.clamp(1, max_cols), rows.clamp(1, max_rows)));
         }
     }
 
-    fit_aspect(iw, ih, max_cols, max_rows, fr)
+    Ok(fit_aspect(iw, ih, max_cols, max_rows, fr))
 }
 
 /// Fit image into the `max` cell box preserving on-screen aspect.
@@ -427,13 +455,28 @@ fn fit_aspect(iw: usize, ih: usize, max_cols: usize, max_rows: usize, fr: f32) -
 }
 
 /// Parse `WxH`, `W`, or `xH` into optional dims.
-fn parse_size(s: &str) -> Option<(Option<usize>, Option<usize>)> {
+fn parse_size(s: &str) -> Result<(Option<usize>, Option<usize>), String> {
+    let invalid = || format!("invalid --size '{s}': use WxH, W, or xH with dimensions in 1..=8191");
+    let dimension = |s: &str| {
+        if s.is_empty() {
+            Ok(None)
+        } else {
+            let value = s.parse::<usize>().map_err(|_| invalid())?;
+            if (1..=IMAGE_DIMENSION_MAX / SYMBOL_WIDTH_PIXELS).contains(&value) {
+                Ok(Some(value))
+            } else {
+                Err(invalid())
+            }
+        }
+    };
     if let Some((a, b)) = s.split_once('x') {
-        let c = if a.is_empty() { None } else { a.parse().ok() };
-        let r = if b.is_empty() { None } else { b.parse().ok() };
-        Some((c, r))
+        let size = (dimension(a)?, dimension(b)?);
+        if size == (None, None) {
+            return Err(invalid());
+        }
+        Ok(size)
     } else {
-        s.parse().ok().map(|c| (Some(c), None))
+        Ok((Some(dimension(s)?.ok_or_else(invalid)?), None))
     }
 }
 
@@ -471,5 +514,26 @@ mod tests {
             parse_stipple_mode("grayscale-fill").unwrap(),
             StippleMode::GrayscaleFill
         );
+    }
+
+    #[test]
+    fn size_parsing_requires_complete_valid_dimensions() {
+        assert_eq!(parse_size("80x24").unwrap(), (Some(80), Some(24)));
+        assert_eq!(parse_size("80x").unwrap(), (Some(80), None));
+        assert_eq!(parse_size("x24").unwrap(), (None, Some(24)));
+        assert_eq!(parse_size("80").unwrap(), (Some(80), None));
+        for invalid in [
+            "",
+            "x",
+            "0",
+            "-1x24",
+            "80xjunk",
+            "junkx24",
+            "80x24x1",
+            "8192x1",
+            "18446744073709551616",
+        ] {
+            assert!(parse_size(invalid).is_err(), "{invalid}");
+        }
     }
 }

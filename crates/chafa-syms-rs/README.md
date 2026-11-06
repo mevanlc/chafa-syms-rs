@@ -18,6 +18,11 @@ This crate is the library package. The companion CLI package is
 - Supports truecolor, indexed, 16/8-color, and foreground/background modes.
 - Resamples RGBA input to the target cell grid with a pure-Rust smolscale port.
 - Runs deterministically across Rayon thread counts.
+- Uses upstream's revised scaling tables and alpha encoding, composites the
+  background before preprocessing, and selects nearest-neighbor sampling at
+  low work factors.
+- Finds contrasting colors with a linear scan and applies upstream's corrected
+  nearest-color lookup for fixed palettes.
 
 The library does not decode image files. Pass raw pixels from your image loader
 of choice, or use the `chafa-syms` CLI if you want a ready-to-run image command.
@@ -67,6 +72,12 @@ let ansi = canvas.print();
 ```
 
 The pre-sized grid must contain `width * 8 * height * 8` pixels.
+It receives the same compositing and preprocessing as `draw_all_pixels`,
+without changing its dimensions.
+
+Pixel dimensions must be in `1..=65535`, and canvas dimensions in `1..=8191`
+cells. Invalid dimensions, short buffers, and invalid rowstrides panic before
+pixel conversion or output allocation.
 
 ## Symbol Maps
 
@@ -87,7 +98,8 @@ individual codepoints, and bracketed character sets are supported.
 
 ## Parity
 
-The port targets bit-exact parity with chafa 1.19.0 for the sRGB
+The port targets bit-exact parity with chafa 1.19.0 at upstream commit `c897fce`
+for the sRGB
 symbol-rendering path. The repository validates the library against a patched
 chafa oracle with differential tests for:
 
@@ -98,9 +110,10 @@ chafa oracle with differential tests for:
 - smolscale resampling
 - end-to-end image-to-ANSI rendering
 
-One intentional difference is tie-breaking. Stock chafa can break equal-score
-symbol ties through platform-dependent sort behavior; this crate uses a stable
-deterministic order.
+Upstream now uses the same deterministic `(popcount, codepoint)` ordering as
+this crate. The oracle patch adds dump hooks without changing rendering rules.
+The parity tests include transparent input, colored backgrounds, low-work
+sampling, and preprocessing.
 
 ## Scope
 
@@ -112,13 +125,14 @@ Implemented:
 - truecolor, indexed 256/240/16/8, 16/8, `fgbg`, and `fgbg-bgfg` modes
 - ANSI/UTF-8 serialization
 - pure stretch scaling to the cell grid
+- chafa saturation/normalization preprocessing, configurable with
+  `CanvasConfig::preprocessing`; enabled by default in applicable modes
 
 Not implemented:
 
 - image-file decoding
 - terminal probing
 - placement, tuck, and alignment
-- chafa CLI preprocessing
 - dithering, dynamic palettes, sixel, Kitty, or iTerm2 graphics
 - user-imported glyphs
 

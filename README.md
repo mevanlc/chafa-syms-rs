@@ -14,7 +14,8 @@ grid to ANSI/UTF-8.
 
 ## Parity
 
-The port targets **bit-exact parity** with chafa 1.19.0 (sRGB color space). The
+The port targets **bit-exact parity** with chafa 1.19.0 at upstream commit
+`c897fce` (sRGB color space; synchronized November 6, 2026). The
 selection core is all-integer, so parity is exact rather than approximate. It is
 validated against a patched chafa oracle (see [`devdocs/oracle`](devdocs/oracle))
 by differential tests:
@@ -26,13 +27,11 @@ by differential tests:
 | Selection core (symbol + colors per cell) | `(char, fg, bg)` vs chafa's cells, all color modes × work levels × fg-only, fed chafa's exact pixels | ✅ exact |
 | Printer (cells → ANSI) | byte-exact vs chafa's canonical output, all modes × `-O 0/5/6` | ✅ exact |
 | Scaler (smolscale) | RGBA8 resample vs chafa's smolscale, every filter path × axis (incl. alpha) | ✅ exact |
-| End-to-end (image → ANSI) | byte-exact vs chafa, incl. real `--stretch` scaling + transparency, all modes (`-p off`) | ✅ exact |
+| End-to-end (image → ANSI) | byte-exact vs chafa, incl. `--stretch`, transparency, colored backgrounds, low-work sampling, and preprocessing | ✅ exact |
 
-**Determinism note.** Stock chafa breaks equal-popcount symbol ties with an
-unstable `qsort` over GLib hashtable order (platform-dependent, non-canonical).
-This port uses a deterministic `(popcount, codepoint)` total order; the oracle is
-patched to match. On a worst-case noise image, stock vs deterministic chafa
-differ on ~3% of cells — all genuinely arbitrary ties. See
+**Determinism.** Upstream now uses the same `(popcount, codepoint)` ordering as
+this port. The oracle patch only adds introspection; it no longer changes
+tie-breaking or needs `CHAFA_SYMS_RS_TIEBREAK`. See
 [`devdocs/oracle/README.md`](devdocs/oracle/README.md).
 
 ## What's in scope
@@ -47,8 +46,13 @@ differ on ~3% of cells — all genuinely arbitrary ties. See
   pen math, and 16/8 bold-for-bright.
 - Six input pixel formats: RGBA8 / BGRA8 / ARGB8 / ABGR8 / RGB8 / BGR8.
 - Bit-exact **smolscale** resampling: a faithful port of chafa's scalar
-  resampler (gamma-correct, premultiplied linear-light box/bilinear), as a pure
-  stretch to the cell grid.
+  resampler, with the reversible gamma-2 approximation, lossless alpha
+  encoding, box/bilinear filtering, and nearest-neighbor sampling at low work
+  factors. Background compositing happens inside the scaler before preprocessing.
+- Optional chafa saturation/normalization preprocessing, enabled by default
+  for the applicable 16/8/foreground-background modes; disable with `-p off`.
+- Linear scanning for contrasting cell colors and corrected nearest fixed-palette
+  lookup, including the dark cube midpoint and bright-gray off-by-one fixes.
 - `rayon` multithreading (deterministic regardless of thread count).
 
 ## Not ported (out of scope or best-effort)
@@ -57,8 +61,6 @@ differ on ~3% of cells — all genuinely arbitrary ties. See
   cell grid), matching chafa `--stretch`. chafa's CLI-default FIT-and-center
   placement (and the AVX2 fast paths / CPU-feature multiversioning) are not
   modeled; the underlying resampling math is bit-exact regardless.
-- **Preprocessing:** chafa's `normalize_rgb`/saturation preprocessing (applied
-  to 16/8/fgbg modes) is not ported; the library behaves as `--preprocess off`.
 - **User-imported glyphs:** the selector engine's RTL / zero-width /
   non-printable exclusion branches exist for chafa's user-glyph import, which is
   out of scope here. They are inert for the builtin glyph set (no builtin is
@@ -83,6 +85,10 @@ print!("{}", canvas.print());
 skip resampling entirely, pre-size the image to `width*8 × height*8` and use
 `Canvas::draw_rgba_presized`.
 
+Source and destination pixel dimensions must be in `1..=65535`; canvas
+dimensions must be in `1..=8191` cells. Library entry points assert these
+preconditions and validate buffer lengths/rowstrides before allocating.
+
 ## CLI usage
 
 ```sh
@@ -94,7 +100,9 @@ chafa-syms --symbols help                  # selector grammar and named sets
 ```
 
 Flags: `--size --scale --colors --fg --bg --work --threads --symbols
---fg-only --invert --font-ratio --optimize --format`.
+--fg-only --invert --preprocess --stipple-mode --font-ratio --optimize --format`.
+The CLI rejects malformed sizes and non-finite scale/font-ratio values, and
+limits decoded source frames to 256Mpx. It renders a still image, not animations.
 
 ## Layout
 
@@ -104,11 +112,11 @@ crates/chafa-syms-rs/   the library
   src/geometry.rs       cell constants + MSB-first coverage<->bitmap
   src/symbol/           tags, builtin data (generated), generators, derivation
   src/symbol_map.rs     selectors, char_is_selected, candidate search
-  src/work_cell.rs      counting sort, contrasting pair, mean extraction
+  src/work_cell.rs      linear-scan contrasting pair, mean extraction
   src/select.rs         the selection core (the novel part)
   src/palette.rs        fixed palettes + nearest lookup
   src/printer.rs        ANSI/UTF-8 serialization
-  src/pixops.rs         input formats + alpha composite
+  src/pixops.rs         validated input formats + rowstride handling
   src/smolscale.rs      bit-exact smolscale resampler (+ smolscale_luts.rs)
   src/canvas.rs         high-level Canvas/CanvasConfig API
 crates/chafa-syms-cli/  the CLI (bin name: chafa-syms)
@@ -120,10 +128,10 @@ devdocs/                PLAN.md + oracle patch & docs
 
 ```sh
 cargo build --release
-cargo test            # differential tests skip gracefully if the oracle is absent
+cargo nextest run --workspace --locked  # uses the sibling chafa oracle if built
 ```
 
-The differential tests need the patched chafa oracle built once; see
+The differential tests need the updated patched chafa oracle built once; see
 [`devdocs/oracle/README.md`](devdocs/oracle/README.md).
 
 ## License

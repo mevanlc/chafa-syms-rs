@@ -10,25 +10,42 @@
 //! chafa source tree. If neither the built harness nor the sources are
 //! available, the test skips gracefully (like the other oracle gates).
 
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use chafa_syms_rs::smolscale::scale_rgba8;
+use chafa_syms_rs::smolscale::{scale_rgba8, scale_rgba8_with_background};
 
 const HARNESS_C: &str = r#"
 #include <stdio.h>
 #include <stdlib.h>
 #include "smolscale.h"
 int main(int argc, char **argv) {
-    if (argc != 7) return 2;
+    if (argc != 9) return 2;
     int sw=atoi(argv[1]), sh=atoi(argv[2]), dw=atoi(argv[3]), dh=atoi(argv[4]);
     FILE *fi=fopen(argv[5],"rb"); if(!fi) return 1;
     size_t sn=(size_t)sw*sh*4, dn=(size_t)dw*dh*4;
     unsigned char *src=malloc(sn), *dst=malloc(dn);
+    if (!src || !dst) return 1;
     if (fread(src,1,sn,fi)!=sn) return 1; fclose(fi);
-    smol_scale_simple(src, SMOL_PIXEL_RGBA8_UNASSOCIATED, sw, sh, sw*4,
-                      dst, SMOL_PIXEL_RGBA8_UNASSOCIATED, dw, dh, dw*4,
-                      SMOL_NO_FLAGS);
+    SmolFlags flags = SMOL_DISABLE_ACCELERATION;
+    if (atoi(argv[8])) flags |= SMOL_INTERP_NEAREST;
+    if (argv[7][0] == '-') {
+        if (!smol_scale_simple(src, SMOL_PIXEL_RGBA8_UNASSOCIATED, sw, sh, sw*4,
+                              dst, SMOL_PIXEL_RGBA8_UNASSOCIATED, dw, dh, dw*4,
+                              flags)) return 1;
+    } else {
+        unsigned long rgb = strtoul(argv[7], NULL, 16);
+        unsigned char bg[4] = {rgb >> 16, rgb >> 8, rgb, 255};
+        SmolScaleCtx *ctx = smol_scale_new_full(
+            src, SMOL_PIXEL_RGBA8_UNASSOCIATED, sw, sh, sw*4,
+            bg, SMOL_PIXEL_RGBA8_UNASSOCIATED,
+            dst, SMOL_PIXEL_RGBA8_UNASSOCIATED, dw, dh, dw*4,
+            0, 0, dw*256, dh*256, SMOL_COMPOSITE_SRC_OVER_COLOR_SRC_ALPHA,
+            SMOL_OPACITY_MAX, flags | SMOL_CLEAR_DEST, NULL, NULL);
+        if (!ctx || !smol_scale_batch(ctx, 0, dh)) return 1;
+        smol_scale_destroy(ctx);
+    }
     FILE *fo=fopen(argv[6],"wb"); if(!fo) return 1;
     fwrite(dst,1,dn,fo); fclose(fo);
     return 0;
@@ -39,12 +56,14 @@ int main(int argc, char **argv) {
 fn smolscale_src_dir() -> Option<PathBuf> {
     if let Ok(d) = std::env::var("CHAFA_SMOLSCALE_DIR") {
         let p = PathBuf::from(d);
-        if p.join("smolscale.c").is_file() {
-            return Some(p);
-        }
+        assert!(
+            p.join("smolscale.c").is_file(),
+            "CHAFA_SMOLSCALE_DIR has no smolscale.c"
+        );
+        return Some(p);
     }
-    let home = std::env::var("HOME").ok()?;
-    let p = PathBuf::from(home).join("p/gh/chafa/chafa/internal/smolscale");
+    let p =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../chafa/chafa/internal/smolscale");
     if p.join("smolscale.c").is_file() {
         Some(p)
     } else {
@@ -55,17 +74,23 @@ fn smolscale_src_dir() -> Option<PathBuf> {
 /// Build (or reuse) the golden-reference harness; returns its path or `None`.
 fn ensure_harness() -> Option<PathBuf> {
     let out_dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
-    let harness = out_dir.join("smolref_harness");
     let src_dir = smolscale_src_dir()?;
-
-    // Rebuild if missing or older than the sources.
-    let needs_build = !harness.is_file()
-        || newer(&src_dir.join("smolscale.c"), &harness)
-        || newer(&src_dir.join("smolscale-generic.c"), &harness);
-
-    if needs_build {
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    HARNESS_C.hash(&mut hash);
+    for name in [
+        "smolscale.c",
+        "smolscale-generic.c",
+        "smolscale.h",
+        "smolscale-private.h",
+    ] {
+        std::fs::read(src_dir.join(name))
+            .expect("read smolscale reference source")
+            .hash(&mut hash);
+    }
+    let harness = out_dir.join(format!("smolref_{:016x}", hash.finish()));
+    if !harness.is_file() {
         let c_path = out_dir.join("smolref_harness.c");
-        std::fs::write(&c_path, HARNESS_C).ok()?;
+        std::fs::write(&c_path, HARNESS_C).expect("write smolscale golden harness");
         let status = Command::new("cc")
             .args(["-O2", "-I"])
             .arg(&src_dir)
@@ -75,27 +100,24 @@ fn ensure_harness() -> Option<PathBuf> {
             .arg(src_dir.join("smolscale.c"))
             .arg(src_dir.join("smolscale-generic.c"))
             .status()
-            .ok()?;
-        if !status.success() {
-            eprintln!("SKIP: failed to compile smolscale golden harness");
-            return None;
-        }
+            .expect("compile smolscale golden harness");
+        assert!(
+            status.success(),
+            "failed to compile smolscale golden harness"
+        );
     }
     Some(harness)
 }
 
-fn newer(a: &Path, b: &Path) -> bool {
-    match (
-        a.metadata().and_then(|m| m.modified()),
-        b.metadata().and_then(|m| m.modified()),
-    ) {
-        (Ok(ta), Ok(tb)) => ta > tb,
-        _ => true,
-    }
-}
-
 /// Run the harness to produce the reference output for `src`.
-fn oracle_scale(harness: &Path, src: &[u8], sw: usize, sh: usize, dw: usize, dh: usize) -> Vec<u8> {
+fn oracle_scale(
+    harness: &Path,
+    src: &[u8],
+    dimensions: (usize, usize, usize, usize),
+    bg: Option<u32>,
+    nearest: bool,
+) -> Vec<u8> {
+    let (sw, sh, dw, dh) = dimensions;
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
     let inf = dir.join("smolref_in.bin");
     let outf = dir.join("smolref_out.bin");
@@ -109,6 +131,8 @@ fn oracle_scale(harness: &Path, src: &[u8], sw: usize, sh: usize, dw: usize, dh:
         ])
         .arg(&inf)
         .arg(&outf)
+        .arg(bg.map_or_else(|| "-".into(), |rgb| format!("{rgb:06x}")))
+        .arg(if nearest { "1" } else { "0" })
         .status()
         .expect("run harness");
     assert!(status.success(), "harness failed for {sw}x{sh}->{dw}x{dh}");
@@ -158,7 +182,7 @@ fn scaler_matches_smolscale_golden() {
     //   one   (src dim == 1)
     //   bilinear magnify (dest > src)
     //   bilinear + halvings (src a few× dest)
-    //   box   (src > dest*8)
+    //   box   (src >= dest*14)
     // plus mixed per-axis combinations and awkward odd sizes.
     let cases: &[(usize, usize, usize, usize)] = &[
         (64, 64, 64, 64),   // copy / copy
@@ -177,30 +201,46 @@ fn scaler_matches_smolscale_golden() {
         (256, 256, 1, 1),   // reduce to a single pixel
         (5, 5, 1, 7),       // tiny -> thin strip
         (63, 65, 64, 64),   // near-equal, non-copy
+        (26, 1, 2, 1),      // 13x: bilinear, three halvings
+        (28, 1, 2, 1),      // exactly 14x: box
+        (1, 29, 1, 2),      // just beyond 14x on the other axis
+        (2048, 1, 3, 1),    // wide box spans must not overflow alpha
+        (1, 2048, 1, 3),
+        (65535, 1, 1, 1), // maximum accepted source extent
     ];
 
     for &(sw, sh, dw, dh) in cases {
         for seed in [1u32, 7, 99] {
             let src = make_image(sw, sh, seed);
-            let want = oracle_scale(&harness, &src, sw, sh, dw, dh);
-            let got = scale_rgba8(&src, sw, sh, dw, dh);
-            assert_eq!(got.len(), want.len(), "size mismatch {sw}x{sh}->{dw}x{dh}");
-            if got != want {
-                // Report the first differing pixel for diagnosis.
-                let mut first = None;
-                for (i, (a, b)) in got.iter().zip(want.iter()).enumerate() {
-                    if a != b {
-                        first = Some((i / 4, i % 4, *a, *b));
-                        break;
+            for (background, nearest) in [
+                (None, false),
+                (Some(0), false),
+                (Some(0x2957a3), false),
+                (Some(0x2957a3), true),
+            ] {
+                let want = oracle_scale(&harness, &src, (sw, sh, dw, dh), background, nearest);
+                let got = match background {
+                    None => scale_rgba8(&src, sw, sh, dw, dh),
+                    Some(bg) => scale_rgba8_with_background(&src, sw, sh, dw, dh, bg, nearest),
+                };
+                assert_eq!(got.len(), want.len(), "size mismatch {sw}x{sh}->{dw}x{dh}");
+                if got != want {
+                    // Report the first differing pixel for diagnosis.
+                    let mut first = None;
+                    for (i, (a, b)) in got.iter().zip(want.iter()).enumerate() {
+                        if a != b {
+                            first = Some((i / 4, i % 4, *a, *b));
+                            break;
+                        }
                     }
-                }
-                panic!(
-                    "scaler mismatch {sw}x{sh}->{dw}x{dh} seed={seed}: \
+                    panic!(
+                    "scaler mismatch {sw}x{sh}->{dw}x{dh} seed={seed} bg={background:?} nearest={nearest}: \
                      first diff at pixel {:?} (channel,got,want); {} of {} bytes differ",
                     first,
                     got.iter().zip(&want).filter(|(a, b)| a != b).count(),
                     got.len()
                 );
+                }
             }
         }
     }

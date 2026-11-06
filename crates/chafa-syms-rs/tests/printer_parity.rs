@@ -3,8 +3,8 @@
 //! Feeds chafa's exact post-prep pixels through the (proven) Rust selection
 //! core to produce cells, serializes them with the Rust printer, and compares
 //! the bytes to chafa's canonical canvas ANSI (`CHAFA_DUMP_ANSI`, no CLI
-//! framing). This is *cells->ANSI* parity; *image->ANSI* awaits the Phase 5
-//! scaler (best-effort per D2).
+//! framing). This isolates *cells->ANSI* parity; the end-to-end gates cover
+//! the complete image pipeline.
 //!
 //! Covered: all color modes x optimization levels -O 0 (none), 5 (REUSE), 6
 //! (REUSE+REPEAT). -O>=7 (SKIP_CELLS) is out of scope here.

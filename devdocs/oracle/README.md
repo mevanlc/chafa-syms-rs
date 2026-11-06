@@ -1,89 +1,85 @@
-# Differential-test oracle (chafa 1.19.0, patched)
+# Differential-test oracle (chafa 1.19.0, upstream c897fce)
 
-The parity gate compares this crate's per-cell symbol/color picks against the
-real chafa. chafa exposes **no per-cell introspection**, and its printed ANSI
-re-encodes cells through optimizations (SGR 7 reverse for solid cells, space
-handling) that are awkward to invert. So we run a tiny **patched** chafa that
-dumps each cell's internal `(codepoint, fg_color, bg_color)` directly.
+The current rendering baseline is upstream commit
+`c897fce60cc4e947a254770ea1c2e320d58e7dce`, synchronized November 6, 2026.
+The sibling `../chafa` fork includes this baseline and the dump hooks at merge
+commit `db17c15`. Its instrumentation exposes prepared pixels, cells, symbol
+maps, builtin symbols, and canonical ANSI without changing rendering behavior.
 
-This isolates the **selection core** (Phase 4 gate) from the **printer**
-(Phase 6, validated separately by byte-exact ANSI comparison against the
-*stock* binary).
+The version number alone does not identify a compatible oracle: earlier
+1.19.0 snapshots and Homebrew 1.18.2 use different scaling, compositing, and
+fixed-palette arithmetic.
 
-## Building the oracle
+## Building
+
+With the sibling fork already at `db17c15`:
 
 ```sh
-cd ~/p/gh/chafa            # chafa 1.19.0 checkout (commit ea18ac4)
-git apply <this-repo>/devdocs/oracle/chafa-cells-dump.patch
-NOCONFIGURE=1 ./autogen.sh
-./configure
-make -j8
+cd ~/p/my/chafa
+./autogen.sh
+make -j4
 ```
 
-The patched library is `chafa/.libs/libchafa.0.dylib`; the CLI is the libtool
-wrapper `tools/chafa/chafa` (real binary at `tools/chafa/.libs/chafa`).
+Alternatively, use a separate upstream checkout and the bundled patch:
 
-Verified: with `-c full --color-space rgb -O 0`, the built 1.19.0 binary
-produces **byte-identical** truecolor output to the homebrew 1.18.2 binary, so
-1.18.2 is an acceptable fallback for the truecolor core (the only core-affecting
-deltas since 1.18.2 are an FGBG color-storage fix and a scaler pixel-type fix;
-the renderer change is a pure code move).
-
-## The patch
-
-`chafa-cells-dump.patch` adds `chafa_syms_rs_dump_cells()`, called at the top of
-`chafa_canvas_print` and `chafa_canvas_print_rows`. When the `CHAFA_DUMP_CELLS`
-env var names a file (and the canvas is in symbol mode), it writes:
-
-```
-<width> <height>
-<cx> <cy> <codepoint> <fg_AARRGGBB_hex> <bg_AARRGGBB_hex>
-...                       (one line per cell, row-major)
+```sh
+cd ~/p/my
+git clone https://github.com/hpjansson/chafa.git chafa-oracle
+cd chafa-oracle
+git checkout --detach c897fce60cc4e947a254770ea1c2e320d58e7dce
+git apply ../chafa-syms-rs/devdocs/oracle/chafa-cells-dump.patch
+./autogen.sh
+make -j4
 ```
 
-`codepoint == 0` marks a wide-symbol continuation (right half). Colors are
-chafa's packed `0xAARRGGBB` in truecolor; in indexed modes they are palette
-indices. No effect unless the env var is set.
+The real CLI is `tools/chafa/.libs/chafa`; its library is in `chafa/.libs`.
+Tests default to the sibling `../chafa` build. For another checkout:
 
-The patch also adds `chafa_syms_rs_dump_symbols()`, called at the end of
-`chafa_init_symbols`. When `CHAFA_DUMP_SYMBOLS` names a file it writes the
-fully-initialized builtin symbol arrays — ground truth for the Phase 2 symbol
-gate:
-
-```
-NARROW <n>
-<codepoint> <sc> <popcount> <bitmap_hex>      (one line per narrow symbol)
-...
-WIDE <m>
-<codepoint> <sc> <pc_left> <pc_right> <bitmap_left_hex> <bitmap_right_hex>
-...
+```sh
+export CHAFA_ORACLE_BIN="$HOME/p/my/chafa-oracle/tools/chafa/.libs/chafa"
+export CHAFA_ORACLE_LIB="$HOME/p/my/chafa-oracle/chafa/.libs"
+export CHAFA_SMOLSCALE_DIR="$HOME/p/my/chafa-oracle/chafa/internal/smolscale"
+cd ~/p/my/chafa-syms-rs
+cargo nextest run --workspace --locked
 ```
 
-## Deterministic tie-breaking (`CHAFA_SYMS_RS_TIEBREAK`)
+The tests skip their oracle assertions if the binary/source tree is absent.
+When sources are available, a reference-harness compilation failure fails the
+test. The scalar harness cache is keyed by its C wrapper, source, and headers,
+so switching source snapshots cannot silently reuse an older reference.
 
-Stock chafa orders equal-popcount symbols via an unstable `qsort` over GLib
-hashtable iteration — platform-dependent and non-canonical. That order feeds the
-candidate search, so it can change which symbol a cell picks among
-equally-good ties. Pure Rust cannot replicate glibc-qsort-over-glib-ghash, and
-there is no "true" order to match.
+## Dump formats
 
-The patch adds a codepoint tiebreaker to both popcount comparators, gated by
-`CHAFA_SYMS_RS_TIEBREAK`. Since codepoints are unique per compiled map,
-`(popcount, codepoint)` is a *total order* → fully deterministic on both sides.
-The Rust port sorts the same way, and the test harness always sets this env var.
-This refines (never violates) chafa's popcount-ascending invariant.
+Set an environment variable to the destination filename to enable each hook:
 
-**Gap vs stock chafa (measured, chafa-vs-chafa):** on a worst-case
-320x160 plasma + Gaussian-noise image (800 cells), stock and tiebreak builds
-differ on **23 cells (2.9%)** — all near-featureless gray cells where multiple
-symbols tie on popcount, cutoff-Hamming, and color error, i.e. genuinely
-arbitrary picks. Natural images differ far less. The parity gate is therefore
-*bit-exact vs deterministic chafa*; against stock chafa it differs only on these
-arbitrary ties.
+| Variable | Contents |
+|----------|----------|
+| `CHAFA_DUMP_CELLS` | `W H`, then `x y codepoint fg_hex bg_hex` for every cell |
+| `CHAFA_DUMP_PIXELS` | `W H\n`, then `W*H*4` prepared RGBA bytes |
+| `CHAFA_DUMP_SYMMAP` | `SYMMAP_NARROW n`, then `codepoint popcount`; `SYMMAP_WIDE m`, then `codepoint left_popcount right_popcount` |
+| `CHAFA_DUMP_SYMBOLS` | `NARROW n`, then `codepoint tags popcount bitmap_hex`; `WIDE m`, then `codepoint tags left_popcount right_popcount left_bitmap_hex right_bitmap_hex` |
+| `CHAFA_DUMP_ANSI` | Canonical canvas bytes, rows joined by newlines without CLI framing |
 
-## Using it from tests
+In the cell dump, codepoint zero marks a wide-symbol continuation. Truecolor
+colors are packed `0xAARRGGBB`; indexed modes store palette indices. The
+symbol-map and ANSI hooks run through `chafa_canvas_print_rows`, used by the CLI.
 
-`crates/chafa-syms-rs/tests/support/mod.rs` locates the binary via
-`CHAFA_ORACLE_BIN` / `CHAFA_ORACLE_LIB` (build-tree defaults), writes a PNG
-fixture, runs the binary with `CHAFA_DUMP_CELLS`, and parses the dump. Tests
-skip gracefully if the binary is absent.
+## Rendering changes covered by this sync
+
+- Upstream now breaks equal-popcount symbol ties by codepoint unconditionally.
+  `CHAFA_SYMS_RS_TIEBREAK` is no longer needed or set by the harness.
+- Fixed-palette lookup corrects the first cube midpoint and bright-gray index.
+- Contrasting colors use a linear extrema scan, retaining first-minimum,
+  last-maximum, and first-channel tie behavior.
+- Scaling uses upstream's reversible gamma-2 lookup tables, lossless
+  `(alpha + 1)` encoding, a 14x box-filter cutoff, and conservative box weights.
+  Extremely large reductions switch to compressed channels as upstream does.
+- Background compositing runs inside smolscale before preprocessing and retains
+  source alpha. Low-work sampling uses the new nearest-neighbor filter.
+
+The tests compare symbol data/order, per-cell choices, ANSI bytes, isolated
+scaling/compositing, and end-to-end output. They exercise transparency, colored
+backgrounds, work levels, preprocessing, and scaling boundaries. The isolated
+scaler gate compiles upstream's scalar implementation without SIMD; the port
+does not add C decoder dependencies, DIN99d, dynamic palettes, dithering, pixel
+graphics protocols, terminal probing, or animation playback.
